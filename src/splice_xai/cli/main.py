@@ -48,10 +48,8 @@ def _set_seed(seed: int) -> None:
         import torch
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        # Determinism can slow things down; expose later via a flag if needed.
         torch.use_deterministic_algorithms(False)
     except Exception:
-        # Torch not installed or no CUDA; ignore quietly.
         pass
 
 
