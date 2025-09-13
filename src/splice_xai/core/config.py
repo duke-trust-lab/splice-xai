@@ -53,7 +53,6 @@ class InpaintingConfig:
 
     @property
     def inpainting_models(self) -> Dict[str, str]:
-        # Mapping for Replicate model slugs; keep these pinned to known-good revisions
         return {
             "lama": "allenhooo/lama:cdac78a1bec5b23c07fd29692fb70baa513ea403a39e643c48ec5edadb15fe72",
             "stable_diffusion": "stability-ai/stable-diffusion-inpainting:95b7223104132402a9ae91cc677285bc5eb997834bd2349fa486f53910fd68b3",
