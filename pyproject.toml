@@ -17,7 +17,6 @@ dependencies = [
   "matplotlib>=3.7",
   "requests>=2.32.0",
   "python-dotenv>=1.0.0",
-  # heavy stacks are guarded in requirements.txt; okay to leave them out here
   "ultralytics>=8.3.0",
   "replicate>=1.0.0",
 ]
