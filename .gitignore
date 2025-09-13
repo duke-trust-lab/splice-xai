@@ -1,0 +1,41 @@
+# Bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Compiled extensions
+*.so
+
+# Virtual environments
+venv/
+.Python
+.env
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# Local data and output
+data/
+results/
+logs/
+tmp/
+
+# Model weights and checkpoints
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# OS junk
+.DS_Store
+
+# IDE/editor artifacts
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# Coverage and testing
+.coverage
+htmlcov/
