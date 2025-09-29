@@ -1,7 +1,16 @@
-
 # 🧬 SPLICE: Semantically Plausible Localized Inpainting for Context-preserving Explanations in Ecology
 
 This is a Python package for generating counterfactual explanations of object detections by combining **YOLO detection**, **SAM segmentation**, and **Replicate inpainting models**.  
+
+## 📸 Example Results
+
+### Object Removal
+![Object removal example](https://i.ibb.co/xt8vZDxy/JHI-Full-Survey-75m-Flight-01-00313-1280-3840-JPG-rf-2299c5bfdc33fa9eb5469c72881a7ec5-remove-viz.png)
+*Aerial survey image with detected object removed while preserving natural background*
+
+### Object Replacement  
+![Object replacement example](https://i.ibb.co/67RJgMWq/JHI-Full-Survey-75m-survey2-Flight-01-00246-1280-1920-JPG-rf-f47fd1651806e61cb6f112cb635502fd-replac.png)
+*Original object replaced with semantically appropriate alternative*
 
 ## ✨ Features
 
