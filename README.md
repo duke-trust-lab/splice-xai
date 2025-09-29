@@ -3,9 +3,9 @@
 
 This is a Python package for generating counterfactual explanations of object detections by combining **YOLO detection**, **SAM segmentation**, and **Replicate inpainting models**.  
 
-## Features
+## 🎨 Features
 
-- Remove objects from ecological images while preserving plausible backgrounds.
+- Remove objects from images while preserving plausible backgrounds.
 - Replace objects with semantically guided alternatives.
 - Change backgrounds around detected objects.
 - Batch processing of entire datasets.
@@ -14,7 +14,7 @@ This is a Python package for generating counterfactual explanations of object de
 
 ---
 
-## Installation
+## 🎨 Installation
 
 Clone the repo and install in editable mode:
 
@@ -29,7 +29,7 @@ For optional GPU acceleration, ensure CUDA is available.
 
 ---
 
-## Quickstart
+## 🎨 Quickstart
 
 ### 1. Single image via CLI
 
@@ -112,7 +112,7 @@ splice-xai --image scene.jpg --yolo-model model.pt --mode replace --prompt "a re
 
 ---
 
-## Python API
+## 🎨 Python API
 
 ```python
 from splice_xai import SPLICEAnalyzer, InpaintingConfig
@@ -129,7 +129,7 @@ if result.image:
 
 ---
 
-## Requirements
+## 🎨 Requirements
 
 - **YOLO weights**: provide your own `.pt` file in `data/models/` (trained on your dataset).
 - **SAM checkpoint**: will be auto-downloaded if not present in `data/models/`.
@@ -140,7 +140,7 @@ export REPLICATE_API_TOKEN=your_token_here
 ```
 
 ---
-## Adapting SPLICE for Different Detection Models
+## 🎨 Adapting SPLICE for Different Detection Models
 
 SPLICE currently uses YOLO for object detection, but can be adapted to work with other detection frameworks. To integrate a different model:
 
@@ -189,7 +189,7 @@ For detailed implementation examples or assistance adapting specific models, ple
 
 ---
 
-## Contributing
+## 🎨 Contributing
 
 - Use feature branches + pull requests.
 - Add tests under `tests/` for new features.
@@ -198,6 +198,6 @@ For detailed implementation examples or assistance adapting specific models, ple
 
 ---
 
-## License
+## 🎨 License
 
 MIT License – see [LICENSE](LICENSE) for details.
