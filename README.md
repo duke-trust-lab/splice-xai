@@ -12,6 +12,10 @@ This is a Python package for generating counterfactual explanations of object de
 ![Object replacement example](https://i.ibb.co/67RJgMWq/JHI-Full-Survey-75m-survey2-Flight-01-00246-1280-1920-JPG-rf-f47fd1651806e61cb6f112cb635502fd-replac.png)
 *Original object replaced with semantically appropriate alternative*
 
+### Background Change
+![Background change example](https://i.ibb.co/1jgQ1D1/JHI-Full-Survey-75m-survey2-Flight-01-00299-640-3840-JPG-rf-3c8a661f4b49bfe41d245c5784e7dea9-bgc-roc.png)
+*Background modified to rocky terrain while preserving detected objects*
+
 ## ✨ Features
 
 - Remove objects from images while preserving plausible backgrounds.
