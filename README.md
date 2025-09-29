@@ -49,6 +49,67 @@ splice-xai   --image data/images/seal1.jpg   --yolo-model data/models/seal.pt   
 splice-xai   --batch data/images/   --yolo-model data/models/seal.pt   --mode remove   --save-images   --csv results/batch.csv
 ```
 
+
+### All CLI Arguments for Customization
+
+#### Input Arguments (Required - Choose One)
+- **`--image PATH`**: Path to a single image file for processing
+- **`--batch PATH`**: Path to a directory containing multiple images for batch processing
+
+#### Model Configuration (Required)
+- **`--yolo-model PATH`**: Path to your trained YOLO model file (.pt format)
+- **`--mask PATH`**: Path to a custom mask image (optional - if not provided, SAM will generate masks automatically)
+
+#### Processing Mode
+- **`--mode {remove,replace,background,all}`**: Counterfactual generation mode (default: remove)
+  - `remove`: Remove detected objects from images
+  - `replace`: Replace objects with new content using prompts
+  - `background`: Change background around detected objects
+  - `all`: Run all three modes on each image
+
+#### Inpainting Configuration
+- **`--inpaint-model {lama,stable_diffusion,flux,sdxl}`**: Choose inpainting backend (default: stable_diffusion)
+  - `lama`: Fast, lightweight model good for simple object removal
+  - `stable_diffusion`: Balanced quality and speed for most use cases
+  - `flux`: High-quality results for complex scenes
+  - `sdxl`: Premium quality for detailed inpainting tasks
+- **`--prompt TEXT`**: Custom text prompt for object replacement or inpainting guidance (required for replace mode)
+- **`--negative-prompt TEXT`**: Negative prompt to avoid unwanted elements in generated content
+- **`--background TYPE`**: Background type for background change mode (default: rocky)
+- **`--target-label CLASS`**: Specific object class to target for replacement (useful when multiple objects are detected)
+
+#### Output Options
+- **`--output DIR`**: Output directory for results (default: results)
+- **`--save-images`**: Save the generated/modified images to disk
+- **`--visualize`**: Create before/after comparison visualizations with bounding boxes
+- **`--csv PATH`**: Save processing results and statistics to CSV file
+
+#### Advanced Configuration
+- **`--conf-threshold FLOAT`**: YOLO confidence threshold for object detection (default: 0.4)
+  - Lower values detect more objects but may include false positives
+  - Higher values are more selective but may miss objects
+- **`--seed INT`**: Random seed for reproducible results (default: 42)
+- **`--device {auto,cpu,cuda}`**: Computation device (default: auto)
+  - `auto`: Automatically choose GPU if available, otherwise CPU
+  - `cpu`: Force CPU usage
+  - `cuda`: Force GPU usage (requires CUDA setup)
+
+#### Usage Examples by Scenario
+**High-quality object removal with visualization:**
+```bash
+splice-xai --image photo.jpg --yolo-model model.pt --mode remove --inpaint-model sdxl --save-images --visualize
+```
+
+**Batch processing with custom confidence threshold:**
+```bash
+splice-xai --batch ./dataset/ --yolo-model model.pt --mode all --conf-threshold 0.6 --csv results.csv
+```
+
+**Replace specific objects with custom prompts:**
+```bash
+splice-xai --image scene.jpg --yolo-model model.pt --mode replace --prompt "a red car" --target-label vehicle --negative-prompt "blurry, low quality"
+```
+
 ---
 
 ## Python API
