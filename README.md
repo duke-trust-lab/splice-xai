@@ -140,6 +140,54 @@ export REPLICATE_API_TOKEN=your_token_here
 ```
 
 ---
+## Adapting SPLICE for Different Detection Models
+
+SPLICE currently uses YOLO for object detection, but can be adapted to work with other detection frameworks. To integrate a different model:
+
+### Code Modifications Required
+
+1. **Create a new detector class** following the interface pattern in `src/splice_xai/detection/yolo_detector.py`:
+   ```python
+   class YourDetector:
+       def __init__(self, model_path: str, device: Optional[str] = None):
+           # Initialize your model
+           pass
+       
+       def detect(self, image: np.ndarray, conf_threshold: float = 0.4):
+           # Return detection results
+           pass
+       
+       def get_top_detection(self, image: np.ndarray, conf_threshold: float = 0.4) -> ObjectDetectionResult:
+           # Return top detection in ObjectDetectionResult format
+           pass
+   ```
+
+2. **Update the analyzer initialization** in `src/splice_xai/core/analyzer.py`:
+   ```python
+   # Replace this line:
+   self.detector = YOLODetector(yolo_model, device=getattr(self.config, "device", "auto"))
+   
+   # With:
+   self.detector = YourDetector(model_path, device=getattr(self.config, "device", "auto"))
+   ```
+
+3. **Ensure your detector returns the expected format**:
+   - `bbox`: List of 4 coordinates [x1, y1, x2, y2]
+   - `class_id`: Integer class ID
+   - `confidence`: Float confidence score
+   - `class_names`: Dictionary mapping class IDs to names
+
+### Key Interface Requirements
+
+Your detector must provide:
+- Image input as `np.ndarray` (HWC RGB format)
+- Bounding box output as `[x1, y1, x2, y2]` coordinates
+- Confidence thresholding capability
+- Class name mapping for interpretable results
+
+For detailed implementation examples or assistance adapting specific models, please open an issue on the repository.
+
+---
 
 ## Contributing
 
