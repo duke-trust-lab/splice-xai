@@ -32,7 +32,7 @@ This is a Python package for generating counterfactual explanations of object de
 Clone the repo and install in editable mode:
 
 ```bash
-git clone https://github.com/TRUST-Lab/splice-xai.git
+git clone https://github.com/duke-trust-lab/splice-xai.git
 cd splice-xai
 pip install -e .
 ```
