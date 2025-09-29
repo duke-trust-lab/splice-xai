@@ -94,7 +94,7 @@ splice-xai   --batch data/images/   --yolo-model data/models/seal.pt   --mode re
   - `cpu`: Force CPU usage
   - `cuda`: Force GPU usage (requires CUDA setup)
 
-#### 💡Usage Examples by Scenario
+#### 💡 Usage Examples by Scenario
 **High-quality object removal with visualization:**
 ```bash
 splice-xai --image photo.jpg --yolo-model model.pt --mode remove --inpaint-model sdxl --save-images --visualize
