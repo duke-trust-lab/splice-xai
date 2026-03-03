@@ -8,6 +8,10 @@ class InpaintingConfig:
     detector_conf_threshold: float = 0.4
     mask_union_threshold: Optional[float] = None
 
+    use_sam: bool = True
+
+    mask_mode: Literal["top1", "union"] = "top1"
+
     # Execution
     max_retries: int = 3
     timeout_seconds: int = 60

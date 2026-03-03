@@ -57,16 +57,22 @@ class SPLICEAnalyzer:
                 f"Unsupported model_type: {model_type}. Use 'yolo' or 'frcnn'."
             )
 
-        self.segmentor = SAMSegmentor(
-            checkpoint_path=self.config.sam_checkpoint_path,
-            checkpoint_url=self.config.sam_checkpoint_url,
-            device=device,
-        )
+        # --- Conditional SAM Initialization ---
+        self.segmentor = None
+        if self.config.use_sam:
+            self.segmentor = SAMSegmentor(
+                checkpoint_path=self.config.sam_checkpoint_path,
+                checkpoint_url=self.config.sam_checkpoint_url,
+                device=device,
+            )
+        else:
+            logger.info("SAM initialization skipped (using Bounding Box mask mode).")
+
         self.inpainter = ReplicateInpainter(replicate_api_key, self.config)
 
         logger.info(
             f"SPLICE Analyzer initialized with {len(self.detector.class_names)} classes "
-            f"using {model_type.upper()} backend."
+            f"using {model_type.upper()} backend (Mask Mode: {'SAM' if self.config.use_sam else 'Bounding Box'})."
         )
 
     # ---------------------------
@@ -284,12 +290,14 @@ class SPLICEAnalyzer:
     def _generate_mask(
         self, image: Image.Image, mode: str = "top1"
     ) -> Optional[Image.Image]:
+        """Handles the choice between SAM and Bounding Box masking."""
         detection = self.detector.get_top_detection(
             np.array(image), self.config.detector_conf_threshold
         )
         if not detection.has_detection:
             return None
 
+        # Gather relevant boxes based on mode
         if mode == "union":
             boxes = np.array(detection.full_results.get("all_boxes", []))
             if boxes.size == 0 and detection.bbox:
@@ -300,7 +308,29 @@ class SPLICEAnalyzer:
         if boxes.size == 0:
             return None
 
-        return self.segmentor.generate_mask(np.array(image), boxes, mode)
+        # --- BRANCH: SAM vs BOX ONLY ---
+        if self.config.use_sam and self.segmentor is not None:
+            logger.info("Generating mask via SAM (pixel-perfect)")
+            return self.segmentor.generate_mask(np.array(image), boxes, mode)
+        else:
+            logger.info("Generating mask via Bounding Box (rectangular)")
+            # Create a blank black mask (mode 'L' for 8-bit grayscale)
+            width, height = image.size
+            mask_np = np.zeros((height, width), dtype=np.uint8)
+
+            # Fill the detected rectangles with white (255)
+            for box in boxes:
+                # box is [x1, y1, x2, y2]
+                x1, y1, x2, y2 = map(int, box)
+
+                # Clip coordinates to image boundaries to prevent indexing errors
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(width, x2), min(height, y2)
+
+                # Fill the rectangle in the numpy array
+                mask_np[y1:y2, x1:x2] = 255
+
+            return Image.fromarray(mask_np)
 
     def _extract_object_alpha(
         self, image: Image.Image, mask: Image.Image

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Command-line interface for SPLICE-XAI supporting multiple detector backends"""
+"""Command-line interface for SPLICE-XAI supporting multiple detector backends and masking modes."""
 
 import argparse
 import logging
@@ -89,7 +89,16 @@ def main():
         default=1,
         help="Number of foreground classes (required for Faster R-CNN)",
     )
-    parser.add_argument("--mask", help="Path to mask image")
+    parser.add_argument(
+        "--mask", help="Path to manual mask image (overrides auto-masking)"
+    )
+
+    # Masking Mode
+    parser.add_argument(
+        "--box-only",
+        action="store_true",
+        help="Use the detector bounding box as the mask instead of SAM pixel-mask (faster)",
+    )
 
     # Experiment
     parser.add_argument(
@@ -133,7 +142,7 @@ def main():
         "--device",
         choices=["auto", "cpu", "cuda"],
         default="auto",
-        help="Computation device",
+        help="Computation device (auto, cpu, or cuda)",
     )
 
     args = parser.parse_args()
@@ -159,13 +168,14 @@ def main():
     _set_seed(args.seed)
 
     # Initialize analyzer with adaptive parameters
+    # Note: args.box_only being True means use_sam should be False
     config = InpaintingConfig(
         detector_conf_threshold=args.conf_threshold,
-        device=args.device if hasattr(InpaintingConfig, "device") else None,
+        use_sam=not args.box_only,
+        device=args.device if hasattr(InpaintingConfig, "device") else "auto",
     )
 
     try:
-        # We pass the model path, detected type, and num_classes to the SPLICEAnalyzer
         analyzer = SPLICEAnalyzer(
             model_path=args.model,
             config=config,
@@ -215,7 +225,7 @@ def main():
             return None
         return None
 
-    # Processing Logic
+    # Processing Loop
     input_paths = (
         [args.image]
         if args.image
