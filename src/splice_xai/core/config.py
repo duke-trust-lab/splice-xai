@@ -5,7 +5,7 @@ from typing import Dict, Optional, Tuple, Literal
 @dataclass
 class InpaintingConfig:
     # Detection / segmentation
-    yolo_conf_threshold: float = 0.4
+    detector_conf_threshold: float = 0.4
     mask_union_threshold: Optional[float] = None
 
     # Execution
@@ -44,12 +44,14 @@ class InpaintingConfig:
     )
 
     # SAM checkpoint management
-    sam_checkpoint_url: str = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+    sam_checkpoint_url: str = (
+        "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+    )
     sam_checkpoint_path: str = "data/models/sam_vit_b_01ec64.pth"
 
     def __post_init__(self):
         if self.mask_union_threshold is None:
-            self.mask_union_threshold = self.yolo_conf_threshold
+            self.mask_union_threshold = self.detector_conf_threshold
 
     @property
     def inpainting_models(self) -> Dict[str, str]:

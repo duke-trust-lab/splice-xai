@@ -20,6 +20,8 @@ dist/
 results/
 logs/
 tmp/
+data/
+results*/
 
 # Model weights and checkpoints
 *.pt
