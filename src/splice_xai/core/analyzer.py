@@ -32,13 +32,6 @@ class SPLICEAnalyzer:
     ):
         """
         Initializes the SPLICE Analyzer with an adaptive detector backend.
-
-        Args:
-            model_path: Path to the model weights (.pt or .pth).
-            config: Configuration object.
-            replicate_api_key: Optional API key for Replicate inpainting.
-            model_type: Architecture type ('yolo' or 'frcnn').
-            num_classes: Number of foreground classes (used for Faster R-CNN).
         """
         self.config = config or InpaintingConfig()
         device = getattr(self.config, "device", "auto")
@@ -70,11 +63,6 @@ class SPLICEAnalyzer:
 
         self.inpainter = ReplicateInpainter(replicate_api_key, self.config)
 
-        logger.info(
-            f"SPLICE Analyzer initialized with {len(self.detector.class_names)} classes "
-            f"using {model_type.upper()} backend (Mask Mode: {'SAM' if self.config.use_sam else 'Bounding Box'})."
-        )
-
     # ---------------------------
     # Single image methods
     # ---------------------------
@@ -84,27 +72,25 @@ class SPLICEAnalyzer:
         mask_path: Optional[str] = None,
         prompt: Optional[str] = None,
         model: str = "stable_diffusion",
+        mask_mode: Optional[str] = None,
         **kwargs,
     ) -> CounterfactualResult:
-        """Generate a counterfactual by removing the top detected object."""
+        """Generate a counterfactual by removing detected object(s)."""
         start_time = time.time()
-
         image = load_image(image_path)
+        effective_mask_mode = mask_mode or getattr(self.config, "mask_mode", "top1")
 
         # 1. Mask Generation
-        if mask_path:
-            mask = load_mask(mask_path)
-        else:
-            mask = self._generate_mask(image)
-            if mask is None:
-                return CounterfactualResult(
-                    experiment_type="remove",
-                    image_path=image_path,
-                    success=False,
-                    outcome="unsuccessful (no mask)",
-                )
+        mask = self._generate_mask(image, mode=effective_mask_mode)
+        if mask is None:
+            return CounterfactualResult(
+                experiment_type="remove",
+                image_path=image_path,
+                success=False,
+                outcome="no mask",
+            )
 
-        # 2. Original Detection (Back-end Agnostic)
+        # 2. Original Detection
         orig_detection = self.detector.get_top_detection(
             np.array(image), self.config.detector_conf_threshold
         )
@@ -113,76 +99,109 @@ class SPLICEAnalyzer:
                 experiment_type="remove",
                 image_path=image_path,
                 success=False,
-                outcome="unsuccessful (no original detection)",
+                outcome="no detections",
             )
 
-        # 3. Inpainting
-        if not prompt:
-            prompt = self.config.default_removal_prompt
+        # --- FIX: Robust Instance Data Collection ---
+        all_boxes = orig_detection.full_results.get("all_boxes", [])
+        original_confs = []
+        original_cls_ids = []
+        original_boxes = []
 
+        for box in all_boxes:
+            # Ensure we don't crash if box is shorter than expected
+            original_boxes.append([float(x) for x in box[:4]])
+            # Fallback to top detection values if per-box data is missing
+            conf = float(box[4]) if len(box) > 4 else float(orig_detection.confidence)
+            cls_id = int(box[5]) if len(box) > 5 else int(orig_detection.class_id)
+            original_confs.append(conf)
+            original_cls_ids.append(cls_id)
+
+        # 3. Inpainting
         img_resized, mask_resized = resize_for_model(
             image, mask, model, self.config.default_model_sizes
         )
-
         with GPUResourceManager():
-            neg_prompt = (
-                kwargs.pop("negative_prompt", None)
-                or self.config.default_negative_prompt
-                or ""
-            )
             inpainted = self.inpainter.inpaint(
                 img_resized,
                 mask_resized,
                 model,
-                prompt,
-                negative_prompt=neg_prompt,
-                **kwargs,
+                prompt or self.config.default_removal_prompt,
+                negative_prompt=kwargs.get("negative_prompt")
+                or self.config.default_negative_prompt
+                or "",
             )
 
         inpainted = inpainted.resize(image.size, Image.LANCZOS)
 
-        # 4. Post-Inpainting Detection
+        # 4. Results
         result_detection = self.detector.get_top_detection(
             np.array(inpainted), self.config.detector_conf_threshold
         )
+        result_count = len(result_detection.full_results.get("all_boxes", []))
 
-        orig_boxes = orig_detection.full_results.get("all_boxes", []) or []
-        result_boxes = result_detection.full_results.get("all_boxes", []) or []
-        orig_count, result_count = len(orig_boxes), len(result_boxes)
-
-        # Determine Success
-        if not result_detection.has_detection:
-            outcome = "success"
-        elif result_count < orig_count:
-            outcome = "partial_success"
-        else:
-            outcome = "unsuccessful"
+        outcome = (
+            "success"
+            if result_count == 0
+            else (
+                "partial_success" if result_count < len(all_boxes) else "unsuccessful"
+            )
+        )
 
         return CounterfactualResult(
             image=inpainted,
             mask=mask,
             success=(outcome == "success"),
             outcome=outcome,
+            mask_mode=effective_mask_mode,
             experiment_type="remove",
             image_path=image_path,
-            mask_path=mask_path,
-            inpainting_model=model,
-            positive_prompt=prompt,
-            negative_prompt=neg_prompt,
-            original_class_id=orig_detection.class_id,
-            original_class_name=self.detector.class_names.get(orig_detection.class_id),
+            original_count=len(all_boxes),
             original_confidence=orig_detection.confidence,
-            original_bbox=orig_detection.bbox,
-            original_count=orig_count,
-            original_boxes=orig_boxes,
-            result_class_id=result_detection.class_id,
-            result_class_name=self.detector.class_names.get(result_detection.class_id),
-            result_confidence=result_detection.confidence,
-            result_bbox=result_detection.bbox,
+            original_confs=original_confs,
+            original_cls_ids=original_cls_ids,
+            original_boxes=original_boxes,
             result_count=result_count,
-            result_boxes=result_boxes,
+            result_confidence=result_detection.confidence,
             runtime_seconds=time.time() - start_time,
         )
+
+    def _generate_mask(
+        self, image: Image.Image, mode: str = "top1"
+    ) -> Optional[Image.Image]:
+        """Handles the choice between SAM and Bounding Box masking with index safety."""
+        detection = self.detector.get_top_detection(
+            np.array(image), self.config.detector_conf_threshold
+        )
+        if not detection.has_detection:
+            return None
+
+        if mode == "union":
+            boxes = detection.full_results.get("all_boxes", [])
+        else:
+            boxes = [detection.bbox] if detection.bbox is not None else []
+
+        if not boxes:
+            return None
+
+        if self.config.use_sam and self.segmentor is not None:
+            return self.segmentor.generate_mask(np.array(image), np.array(boxes), mode)
+        else:
+            # --- FIX: Box-Only logic with index safety and clipping ---
+            width, height = image.size
+            mask_np = np.zeros((height, width), dtype=np.uint8)
+            for box in boxes:
+                try:
+                    # Only take first 4 elements regardless of list length
+                    coords = [int(float(c)) for c in box[:4]]
+                    x1, y1, x2, y2 = coords
+                    # Boundary clipping
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(width, x2), min(height, y2)
+                    mask_np[y1:y2, x1:x2] = 255
+                except (ValueError, IndexError):
+                    continue
+            return Image.fromarray(mask_np)
 
     def replace_object(
         self,
@@ -191,16 +210,22 @@ class SPLICEAnalyzer:
         mask_path: Optional[str] = None,
         model: str = "stable_diffusion",
         target_label: Optional[str] = None,
+        mask_mode: Optional[str] = None,
         **kwargs,
     ) -> CounterfactualResult:
-        """Generate a counterfactual by replacing the top detected object."""
+        """Generate a counterfactual by replacing detected object(s)."""
         result = self.remove_object(
-            image_path, mask_path, replacement_prompt, model, **kwargs
+            image_path,
+            mask_path=mask_path,
+            prompt=replacement_prompt,
+            model=model,
+            mask_mode=mask_mode,
+            **kwargs,
         )
+
         result.experiment_type = "replace"
         result.target_label = target_label
 
-        # Check if replacement caused the model to predict the target class
         if target_label and result.result_class_name:
             if target_label.lower() in result.result_class_name.lower():
                 result.outcome = "success"
@@ -219,28 +244,13 @@ class SPLICEAnalyzer:
         """Generate a counterfactual by changing the background behind the object."""
         start_time = time.time()
         image = load_image(image_path)
-
-        if background not in self.config.available_backgrounds:
-            logger.warning(f"Unknown background '{background}', using default.")
-            background = next(iter(self.config.available_backgrounds))
-        bg_prompt = self.config.available_backgrounds[background]
-
-        # Object matte (alpha)
-        if mask_path:
-            mask = load_mask(mask_path)
-        else:
-            mask = self._generate_mask(image, mode="union")
-            if mask is None:
-                return CounterfactualResult(
-                    experiment_type="background",
-                    image_path=image_path,
-                    success=False,
-                    outcome="unsuccessful (no mask)",
-                )
-
-        orig_detection = self.detector.get_top_detection(
-            np.array(image), self.config.detector_conf_threshold
+        bg_prompt = self.config.available_backgrounds.get(
+            background, "natural background"
         )
+
+        mask = self._generate_mask(image, mode="union")
+        if mask is None:
+            return None
 
         alpha = self._extract_object_alpha(image, mask)
         bg_image = self._generate_background(bg_prompt, image.size, model, **kwargs)
@@ -250,37 +260,22 @@ class SPLICEAnalyzer:
             np.array(result_image), self.config.detector_conf_threshold
         )
 
-        orig_boxes = orig_detection.full_results.get("all_boxes", []) or []
-        result_boxes = result_detection.full_results.get("all_boxes", []) or []
-        orig_count, result_count = len(orig_boxes), len(result_boxes)
-
-        if orig_count > 0 and result_count >= orig_count:
-            outcome = "success"
-        elif result_count > 0:
-            outcome = "partial_success"
-        else:
-            outcome = "unsuccessful"
-
         return CounterfactualResult(
             image=result_image,
             mask=alpha,
-            success=(outcome == "success"),
-            outcome=outcome,
+            success=True,
+            outcome="success",
             experiment_type="background",
             image_path=image_path,
-            mask_path=mask_path,
             inpainting_model=model,
             positive_prompt=bg_prompt,
             background_type=background,
-            original_class_id=orig_detection.class_id,
-            original_class_name=self.detector.class_names.get(orig_detection.class_id),
-            original_confidence=orig_detection.confidence,
-            original_count=orig_count,
-            result_class_id=result_detection.class_id,
-            result_class_name=self.detector.class_names.get(result_detection.class_id),
-            result_confidence=result_detection.confidence,
-            result_count=result_count,
-            result_boxes=result_boxes,
+            original_count=len(
+                self.detector.get_top_detection(
+                    np.array(image), self.config.detector_conf_threshold
+                ).full_results.get("all_boxes", [])
+            ),
+            result_count=len(result_detection.full_results.get("all_boxes", [])),
             runtime_seconds=time.time() - start_time,
         )
 
@@ -299,36 +294,36 @@ class SPLICEAnalyzer:
 
         # Gather relevant boxes based on mode
         if mode == "union":
-            boxes = np.array(detection.full_results.get("all_boxes", []))
-            if boxes.size == 0 and detection.bbox:
-                boxes = np.array([detection.bbox])
-        else:  # top1
-            boxes = np.array([detection.bbox]) if detection.bbox else np.array([])
+            boxes = detection.full_results.get("all_boxes", [])
+        else:
+            boxes = [detection.bbox] if detection.bbox is not None else []
 
-        if boxes.size == 0:
+        if not boxes:
             return None
 
-        # --- BRANCH: SAM vs BOX ONLY ---
         if self.config.use_sam and self.segmentor is not None:
-            logger.info("Generating mask via SAM (pixel-perfect)")
-            return self.segmentor.generate_mask(np.array(image), boxes, mode)
+            logger.info(f"Generating mask via SAM ({mode})")
+            return self.segmentor.generate_mask(np.array(image), np.array(boxes), mode)
         else:
-            logger.info("Generating mask via Bounding Box (rectangular)")
-            # Create a blank black mask (mode 'L' for 8-bit grayscale)
+            logger.info(f"Generating mask via Bounding Box ({mode})")
             width, height = image.size
             mask_np = np.zeros((height, width), dtype=np.uint8)
 
-            # Fill the detected rectangles with white (255)
             for box in boxes:
-                # box is [x1, y1, x2, y2]
-                x1, y1, x2, y2 = map(int, box)
+                # Robust coordinate extraction: take only the first 4 elements
+                # regardless of whether the list has 4, 5, or 6 items.
+                try:
+                    x1, y1, x2, y2 = map(int, box[:4])
 
-                # Clip coordinates to image boundaries to prevent indexing errors
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(width, x2), min(height, y2)
+                    # Clip coordinates to image boundaries
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(width, x2), min(height, y2)
 
-                # Fill the rectangle in the numpy array
-                mask_np[y1:y2, x1:x2] = 255
+                    # Fill the rectangle
+                    mask_np[y1:y2, x1:x2] = 255
+                except (IndexError, TypeError) as e:
+                    logger.warning(f"Skipping malformed box {box}: {e}")
+                    continue
 
             return Image.fromarray(mask_np)
 
@@ -344,14 +339,13 @@ class SPLICEAnalyzer:
     ) -> Image.Image:
         canvas = Image.new("RGB", size, (128, 128, 128))
         full_mask = Image.new("L", size, 255)
-
-        canvas_resized, mask_resized = resize_for_model(
+        c_res, m_res = resize_for_model(
             canvas, full_mask, model, self.config.default_model_sizes
         )
 
         bg = self.inpainter.inpaint(
-            canvas_resized,
-            mask_resized,
+            c_res,
+            m_res,
             model,
             prompt,
             negative_prompt="people, animals, objects, text",

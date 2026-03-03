@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Command-line interface for SPLICE-XAI supporting multiple detector backends and masking modes."""
+"""Command-line interface for SPLICE-XAI with 'Remove All' and Per-Instance Reporting"""
 
 import argparse
 import logging
@@ -55,11 +55,8 @@ def _set_seed(seed: int) -> None:
 
 
 def _conf_tuple(result):
-    before = getattr(result, "confidence_before", None)
-    after = getattr(result, "confidence_after", None)
-    if before is None and after is None:
-        before = getattr(result, "original_confidence", None)
-        after = getattr(result, "result_confidence", None)
+    before = getattr(result, "original_confidence", None)
+    after = getattr(result, "result_confidence", None)
     return before, after
 
 
@@ -68,12 +65,12 @@ def main():
         description="SPLICE-XAI: Generate counterfactual explanations"
     )
 
-    # Inputs
+    # --- Inputs ---
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--image", help="Path to a single image")
     input_group.add_argument("--batch", help="Path to a directory of images")
 
-    # Adaptive Model Selection
+    # --- Detection Model ---
     parser.add_argument(
         "--model", required=True, help="Path to model (.pt for YOLO, .pth for FRCNN)"
     )
@@ -89,18 +86,23 @@ def main():
         default=1,
         help="Number of foreground classes (required for Faster R-CNN)",
     )
+
+    # --- Masking Options ---
+    parser.add_argument(
+        "--box-only",
+        action="store_true",
+        help="Use the detector bounding box as the mask instead of SAM pixel-mask",
+    )
+    parser.add_argument(
+        "--remove-all",
+        action="store_true",
+        help="Target all detected objects instead of just the top-confidence one",
+    )
     parser.add_argument(
         "--mask", help="Path to manual mask image (overrides auto-masking)"
     )
 
-    # Masking Mode
-    parser.add_argument(
-        "--box-only",
-        action="store_true",
-        help="Use the detector bounding box as the mask instead of SAM pixel-mask (faster)",
-    )
-
-    # Experiment
+    # --- Experiment Mode ---
     parser.add_argument(
         "--mode",
         choices=["remove", "replace", "background", "all"],
@@ -108,7 +110,7 @@ def main():
         help="Counterfactual generation mode",
     )
 
-    # Inpainting
+    # --- Inpainting ---
     parser.add_argument(
         "--inpaint-model",
         choices=["lama", "stable_diffusion", "flux", "sdxl"],
@@ -120,7 +122,7 @@ def main():
     parser.add_argument("--background", default="rocky", help="Background type")
     parser.add_argument("--target-label", help="Target class for replacement")
 
-    # Output
+    # --- Output & Logging ---
     parser.add_argument("--output", default="results", help="Output directory")
     parser.add_argument(
         "--save-images", action="store_true", help="Save generated images"
@@ -130,19 +132,16 @@ def main():
     )
     parser.add_argument("--csv", help="Path to save CSV results")
 
-    # Config
+    # --- Config ---
     parser.add_argument(
-        "--conf-threshold",
-        type=float,
-        default=0.4,
-        help="Detection confidence threshold",
+        "--conf-threshold", type=float, default=0.4, help="Confidence threshold"
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "cuda"],
         default="auto",
-        help="Computation device (auto, cpu, or cuda)",
+        help="Computation device",
     )
 
     args = parser.parse_args()
@@ -154,11 +153,6 @@ def main():
 
     logger.info(f"Using detector type: {m_type}")
 
-    if args.mode in ("replace", "all") and not args.prompt:
-        logger.warning(
-            "Mode includes 'replace' but --prompt is empty. Replacement runs will be skipped."
-        )
-
     try:
         _validate_paths(args)
     except Exception as e:
@@ -167,12 +161,12 @@ def main():
 
     _set_seed(args.seed)
 
-    # Initialize analyzer with adaptive parameters
-    # Note: args.box_only being True means use_sam should be False
+    # Initialize configuration with masking modes
     config = InpaintingConfig(
         detector_conf_threshold=args.conf_threshold,
         use_sam=not args.box_only,
-        device=args.device if hasattr(InpaintingConfig, "device") else "auto",
+        mask_mode="union" if args.remove_all else "top1",
+        device=args.device,
     )
 
     try:
@@ -202,9 +196,6 @@ def main():
                     negative_prompt=args.negative_prompt,
                 )
             if mode == "replace":
-                if not args.prompt:
-                    logger.error("Replacement mode requires --prompt; skipping.")
-                    return None
                 return analyzer.replace_object(
                     image_path,
                     replacement_prompt=args.prompt,
@@ -223,9 +214,8 @@ def main():
         except Exception as e:
             logger.error(f"Error processing {image_path} [{mode}]: {e}")
             return None
-        return None
 
-    # Processing Loop
+    # Collect Input Paths
     input_paths = (
         [args.image]
         if args.image
@@ -238,9 +228,12 @@ def main():
 
     modes = ["remove", "replace", "background"] if args.mode == "all" else [args.mode]
 
+    # Execution Loop
     for img_path in input_paths:
         for mode in modes:
-            logger.info(f"Processing {img_path} with mode: {mode}")
+            logger.info(
+                f"Processing {img_path.name} | Mode: {mode} | Mask: {config.mask_mode}"
+            )
             result = _run_single(str(img_path), mode)
             if result is None:
                 continue
@@ -250,20 +243,27 @@ def main():
                 stem = Path(img_path).stem
                 out_name = f"{stem}_{mode}.png"
                 result.image.save(output_dir / out_name)
-                setattr(result, "output_image_path", str(output_dir / out_name))
 
             if args.visualize and getattr(result, "image", None) is not None:
                 viz_path = output_dir / f"{Path(img_path).stem}_{mode}_viz.png"
                 create_comparison_plot(str(img_path), result, str(viz_path))
 
             before, after = _conf_tuple(result)
-            if before is not None and after is not None:
-                logger.info(
-                    f"Result: {result.outcome} (conf: {before:.2f} -> {after:.2f})"
-                )
+            logger.info(
+                f"Result: {result.outcome} (Objects: {result.original_count} -> {result.result_count})"
+            )
 
+    # --- CSV Generation (Instance-Level Flattening) ---
     if args.csv and results:
-        save_results_to_csv([r.to_dict() for r in results], args.csv)
+        all_csv_rows = []
+        for r in results:
+            # Flatten the result into multiple rows (one per detected instance)
+            all_csv_rows.extend(r.to_rows())
+
+        save_results_to_csv(all_csv_rows, args.csv)
+        logger.info(
+            f"Successfully saved {len(all_csv_rows)} detection rows to {args.csv}"
+        )
 
     successful = sum(1 for r in results if getattr(r, "success", False))
     logger.info(f"\nProcessing complete: {successful}/{len(results)} successful")
