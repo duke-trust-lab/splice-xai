@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Command-line interface for SPLICE-XAI with 'Remove All' and Per-Instance Reporting"""
+"""Command-line interface for SPLICE-XAI"""
 
 import argparse
 import logging
@@ -96,7 +96,12 @@ def main():
     parser.add_argument(
         "--remove-all",
         action="store_true",
-        help="Target all detected objects instead of just the top-confidence one",
+        help="Target all detected objects (used for 'remove' mode)",
+    )
+    parser.add_argument(
+        "--replace-all",
+        action="store_true",
+        help="Target all detected objects (used for 'replace' mode)",
     )
     parser.add_argument(
         "--mask", help="Path to manual mask image (overrides auto-masking)"
@@ -161,11 +166,14 @@ def main():
 
     _set_seed(args.seed)
 
-    # Initialize configuration with masking modes
+    # Consolidated multi-instance flag
+    use_union_mask = args.remove_all or args.replace_all
+
+    # Initialize configuration
     config = InpaintingConfig(
         detector_conf_threshold=args.conf_threshold,
         use_sam=not args.box_only,
-        mask_mode="union" if args.remove_all else "top1",
+        mask_mode="union" if use_union_mask else "top1",
         device=args.device,
     )
 
@@ -194,6 +202,7 @@ def main():
                     prompt=args.prompt,
                     model=args.inpaint_model,
                     negative_prompt=args.negative_prompt,
+                    remove_all=use_union_mask,  # Pass intent to analyzer
                 )
             if mode == "replace":
                 return analyzer.replace_object(
@@ -203,6 +212,7 @@ def main():
                     model=args.inpaint_model,
                     target_label=args.target_label,
                     negative_prompt=args.negative_prompt,
+                    replace_all=use_union_mask,  # Pass intent to analyzer
                 )
             if mode == "background":
                 return analyzer.change_background(
@@ -253,11 +263,10 @@ def main():
                 f"Result: {result.outcome} (Objects: {result.original_count} -> {result.result_count})"
             )
 
-    # --- CSV Generation (Instance-Level Flattening) ---
+    # --- CSV Generation ---
     if args.csv and results:
         all_csv_rows = []
         for r in results:
-            # Flatten the result into multiple rows (one per detected instance)
             all_csv_rows.extend(r.to_rows())
 
         save_results_to_csv(all_csv_rows, args.csv)

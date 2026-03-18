@@ -45,8 +45,8 @@ def run_seal_detection(model_path, source_dir, save_dir, conf_threshold=0.40):
 if __name__ == "__main__":
     # Update these paths to match your environment
     MODEL_FILE = "data/models/seal_yolov9.pt"
-    INPUT_FOLDER = "results"
-    OUTPUT_FOLDER = "results_repredict"
+    INPUT_FOLDER = "test_final_result/seal_sam_all_yolo"
+    OUTPUT_FOLDER = "test_final_results_predict"
 
     run_seal_detection(
         model_path=MODEL_FILE,

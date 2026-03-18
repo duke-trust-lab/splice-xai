@@ -1,10 +1,12 @@
 import logging
 import argparse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union, List
+from pathlib import Path
 
 import numpy as np
 import torch
 import torchvision
+from PIL import Image
 from torchvision.models.detection import (
     fasterrcnn_resnet50_fpn_v2,
     FasterRCNN_ResNet50_FPN_V2_Weights,
@@ -26,14 +28,13 @@ class FasterRCNNDetector:
         self, model_path: str, device: Optional[str] = None, num_classes: int = 1
     ):
         self.device = torch.device(_normalize_device(device))
-        total_classes = num_classes + 1
+        total_classes = num_classes + 1  # +1 for background
 
-        # 1. Initialize with DEFAULT weights first to fill the 'missing' backbone keys
-        # Then we replace the head with your custom number of classes
+        # 1. Initialize with DEFAULT weights to build backbone
         weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT
         self.model = fasterrcnn_resnet50_fpn_v2(weights=weights)
 
-        # Adjust the box predictor head to match your trained num_classes
+        # Adjust the box predictor head to match your custom num_classes
         in_features = self.model.roi_heads.box_predictor.cls_score.in_features
         self.model.roi_heads.box_predictor = (
             torchvision.models.detection.faster_rcnn.FastRCNNPredictor(
@@ -47,7 +48,7 @@ class FasterRCNNDetector:
                 model_path, map_location=self.device, weights_only=False
             )
 
-            # 2. Extract the weights from your specific key 'model_state_dict'
+            # 2. Extract weights from your specific key
             if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
                 state_dict = checkpoint["model_state_dict"]
             elif isinstance(checkpoint, dict) and "model" in checkpoint:
@@ -55,11 +56,8 @@ class FasterRCNNDetector:
             else:
                 state_dict = checkpoint
 
-            # Load the weights into the model
             self.model.load_state_dict(state_dict)
-            logger.info(
-                f"Successfully loaded weights from 'model_state_dict' in {model_path}"
-            )
+            logger.info(f"Successfully loaded weights from {model_path}")
 
         except Exception as e:
             logger.error(f"Failed to load model weights: {e}")
@@ -74,7 +72,8 @@ class FasterRCNNDetector:
         self.class_names[0] = "background"
 
     def detect(self, image: np.ndarray) -> Dict[str, torch.Tensor]:
-        # Faster R-CNN expects float tensor [C, H, W] in [0, 1]
+        """Core detection logic. Expects [H, W, C] RGB numpy array."""
+        # Faster R-CNN expects float tensor [C, H, W] normalized to [0, 1]
         img_tensor = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
         img_tensor = img_tensor.unsqueeze(0).to(self.device)
 
@@ -83,17 +82,36 @@ class FasterRCNNDetector:
         return predictions[0]
 
     def get_top_detection(
-        self, image: np.ndarray, conf_threshold: float = 0.4
+        self, image: Union[np.ndarray, str, Path], conf_threshold: float = 0.4
     ) -> ObjectDetectionResult:
-        prediction = self.detect(image)
+        """
+        Polymorphic detection method.
+        Handles both file paths (for initial 'Before' parity) and
+        numpy arrays (for post-inpainting 'After' analysis).
+        """
+        # --- Handle Input Types ---
+        if isinstance(image, (str, Path)):
+            # Load from disk and ensure 3-channel RGB
+            pil_img = Image.open(image).convert("RGB")
+            image_np = np.array(pil_img)
+        elif isinstance(image, np.ndarray):
+            image_np = image
+        else:
+            raise TypeError(f"Expected np.ndarray or str path, got {type(image)}")
+
+        # --- Inference ---
+        prediction = self.detect(image_np)
+
         boxes = prediction["boxes"].detach().cpu().numpy()
         scores = prediction["scores"].detach().cpu().numpy()
         labels = prediction["labels"].detach().cpu().numpy().astype(int)
 
+        # --- Filter by Threshold ---
         mask = scores >= conf_threshold
         if not np.any(mask):
             return ObjectDetectionResult()
 
+        # Find the highest confidence detection for the legacy summary fields
         top_idx = int(np.argmax(scores))
 
         return ObjectDetectionResult(

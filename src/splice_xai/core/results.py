@@ -24,7 +24,7 @@ class CounterfactualResult:
     mask: Optional[Image.Image] = None
     success: bool = False
     outcome: str = "unsuccessful"
-    mask_mode: str = "top1"  # New field
+    mask_mode: str = "top1"
 
     experiment_type: str = ""
     image_path: str = ""
@@ -62,38 +62,78 @@ class CounterfactualResult:
     visualization_path: Optional[str] = None
 
     def to_rows(self) -> List[Dict[str, Any]]:
-        """Generates a list of dictionaries, one for each original instance."""
+        """
+        Generates a list of dictionaries, one for each original instance.
+        If multiple instances exist, each gets its unique 'instance_confidence'
+        AND its unique mapped 'result_confidence'.
+        """
         rows = []
 
-        # If no instances were detected originally, return one row for the image
-        if not self.original_confs or len(self.original_confs) == 0:
+        # 1. Determine which original confidences to use as the base for rows
+        confs_to_process = (
+            self.original_confs
+            if (self.original_confs and len(self.original_confs) > 0)
+            else [self.original_confidence]
+        )
+
+        # 2. Handle the "No Detections" case
+        if not confs_to_process or confs_to_process[0] is None:
             rows.append(
-                self._create_row(instance_id=None, inst_conf=self.original_confidence)
+                self._create_row(instance_id=None, inst_conf=None, res_conf=None)
             )
             return rows
 
-        # Create a row for every detected instance
-        for i, conf in enumerate(self.original_confs):
-            rows.append(self._create_row(instance_id=i, inst_conf=conf))
+        # 3. Generate one row per animal, passing the mapped result confidence
+        for i, conf in enumerate(confs_to_process):
+            # Try to get the specific result confidence for this instance index
+            # This relies on the spatial mapping logic we added to analyzer.py
+            mapped_res_conf = None
+            if self.result_confs and i < len(self.result_confs):
+                mapped_res_conf = self.result_confs[i]
+
+            rows.append(
+                self._create_row(
+                    instance_id=i, inst_conf=conf, res_conf=mapped_res_conf
+                )
+            )
 
         return rows
 
     def _create_row(
-        self, instance_id: Optional[int], inst_conf: Optional[float]
+        self,
+        instance_id: Optional[int],
+        inst_conf: Optional[float],
+        res_conf: Optional[float] = None,  # Added specific result confidence parameter
     ) -> Dict[str, Any]:
-        """Helper to build the dictionary for a single row."""
+        """Helper to build the dictionary for a single row with mapped instance values."""
+
+        # Determine the final result confidence for this row
+        # Priority: 1. Passed mapped res_conf, 2. Global self.result_confidence, 3. 0.0
+        final_res_conf = 0.0
+        if res_conf is not None:
+            final_res_conf = res_conf
+        elif self.result_confidence is not None:
+            # Fallback for single-instance legacy runs
+            final_res_conf = self.result_confidence
+
         return {
             "experiment_type": self.experiment_type,
             "mask_mode": self.mask_mode,
             "image_path": self.image_path,
-            "instance_id": instance_id,  # Link rows to specific animal index
+            "instance_id": instance_id if instance_id is not None else "N/A",
             "original_count": self.original_count,
             "result_count": self.result_count,
-            "instance_confidence": inst_conf,
-            "result_confidence": self.result_confidence,  # Detection score after inpainting
+            "instance_confidence": (
+                round(float(inst_conf), 4) if inst_conf is not None else 0.0
+            ),
+            "result_confidence": (round(float(final_res_conf), 4)),
             "outcome": self.outcome,
             "success": self.success,
             "inpainting_model": self.inpainting_model,
-            "positive_prompt": self.positive_prompt,
-            "runtime_seconds": self.runtime_seconds,
+            "positive_prompt": self.positive_prompt or "",
+            "runtime_seconds": (
+                round(float(self.runtime_seconds), 3)
+                if self.runtime_seconds is not None
+                else 0.0
+            ),
         }

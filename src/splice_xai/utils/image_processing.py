@@ -38,6 +38,35 @@ def feather_mask(mask: Image.Image, radius: int = 3) -> Image.Image:
     return m.filter(ImageFilter.GaussianBlur(radius=radius))
 
 
+def letterbox_image(
+    image: Image.Image,
+    target_size: Tuple[int, int],
+    fill_color: int | Tuple[int, int, int] = 0,
+    resample=Image.LANCZOS,
+) -> Tuple[Image.Image, Tuple[int, int, int, int]]:
+    """
+    Resize image to target_size while preserving aspect ratio using padding.
+    Returns: (padded_image, (left, top, right, bottom) padding offsets)
+    """
+    iw, ih = image.size
+    tw, th = target_size
+    scale = min(tw / iw, th / ih)
+    nw = int(iw * scale)
+    nh = int(ih * scale)
+
+    image_resized = image.resize((nw, nh), resample=resample)
+
+    # Create canvas with fill color (0 for masks/black, (128,128,128) for images)
+    new_image = Image.new(image.mode, target_size, fill_color)
+
+    # Calculate offsets to center the image
+    left = (tw - nw) // 2
+    top = (th - nh) // 2
+    new_image.paste(image_resized, (left, top))
+
+    return new_image, (left, top, left + nw, top + nh)
+
+
 def resize_for_model(
     image: Image.Image,
     mask: Image.Image,
@@ -45,8 +74,7 @@ def resize_for_model(
     default_sizes: Dict[str, Optional[Tuple[int, int]]],
 ) -> tuple[Image.Image, Image.Image]:
     """
-    Resize image/mask pair for the target model.
-    If size is None, return originals.
+    Resize image/mask pair using letterboxing to preserve aspect ratio.
     """
     size = default_sizes.get(model_name)
     if size is None:
@@ -54,9 +82,19 @@ def resize_for_model(
 
     w, h = size
     if not isinstance(w, int) or not isinstance(h, int):
-        logger.warning(f"Invalid target size for '{model_name}': {size}. Returning originals.")
+        logger.warning(
+            f"Invalid target size for '{model_name}': {size}. Returning originals."
+        )
         return image, _to_L(mask)
 
-    img_resized = image.convert("RGB").resize((w, h), Image.LANCZOS)
-    mask_resized = _to_L(mask).resize((w, h), Image.NEAREST)
+    # 1. Letterbox the Image (using gray padding for natural background)
+    img_resized, _ = letterbox_image(
+        image.convert("RGB"), (w, h), fill_color=(128, 128, 128), resample=Image.LANCZOS
+    )
+
+    # 2. Letterbox the Mask (using black padding for the mask)
+    mask_resized, _ = letterbox_image(
+        _to_L(mask), (w, h), fill_color=0, resample=Image.NEAREST
+    )
+
     return img_resized, mask_resized
