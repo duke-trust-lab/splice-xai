@@ -24,6 +24,8 @@ data/
 results*/
 *result*/
 *replace*/
+*background*/
+*sample*/
 
 # Model weights and checkpoints
 *.pt

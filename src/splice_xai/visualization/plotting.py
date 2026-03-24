@@ -15,7 +15,9 @@ from splice_xai.utils.file_io import load_image
 logger = logging.getLogger(__name__)
 
 
-def _iter_boxes(boxes: Optional[Iterable]) -> Iterable[Tuple[float, float, float, float]]:
+def _iter_boxes(
+    boxes: Optional[Iterable],
+) -> Iterable[Tuple[float, float, float, float]]:
     if not boxes:
         return []
     for b in boxes:
@@ -45,25 +47,21 @@ def create_comparison_plot(
     result: CounterfactualResult,
     save_path: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    Create a side-by-side visualization: original, mask, and inpainted image with boxes.
-
-    Returns the save_path if provided, else None. Always closes the figure.
-    """
-    # Load with EXIF orientation handling
     orig = load_image(original_path)
     W, H = orig.size
-
-    # Prepare figure
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    # Check if we should draw the 15% margin
+    is_sam = getattr(result, "use_sam", False)
+
     try:
-        # Panel 1: Original
         axes[0].imshow(orig)
-        axes[0].set_title("Original")
+        axes[0].set_title(f"Original {'(SAM)' if is_sam else '(+15% Area)'}")
         axes[0].axis("off")
 
         for box in _iter_boxes(result.original_boxes):
             x1, y1, x2, y2 = _clamp_box(box, W, H)
+            # Solid Lime = Model Prediction
             axes[0].add_patch(
                 patches.Rectangle(
                     (x1, y1),
@@ -75,48 +73,39 @@ def create_comparison_plot(
                 )
             )
 
-        # Panel 2: Mask (force L mode, show as grayscale)
-        if result.mask is not None:
-            mask_L = result.mask.convert("L")
-            axes[1].imshow(np.array(mask_L), cmap="gray", vmin=0, vmax=255)
-            axes[1].set_title("Mask")
-            axes[1].axis("off")
-        else:
-            axes[1].axis("off")
-            axes[1].set_title("Mask (none)")
-
-        # Panel 3: Result
-        if result.image is not None:
-            # If result size differs, we still display it; boxes are drawn in its own coordinate space
-            res_img = result.image
-            axes[2].imshow(res_img)
-            axes[2].set_title("Inpainted")
-            axes[2].axis("off")
-
-            w2, h2 = res_img.size
-            for box in _iter_boxes(result.result_boxes):
-                x1, y1, x2, y2 = _clamp_box(box, w2, h2)
-                axes[2].add_patch(
+            # ONLY Draw 15% Area Dashed Box if NOT SAM
+            if not is_sam:
+                bw, bh = x2 - x1, y2 - y1
+                ex1, ey1 = max(0, x1 - (bw * 0.036)), max(0, y1 - (bh * 0.036))
+                ex2, ey2 = min(W, x2 + (bw * 0.036)), min(H, y2 + (bh * 0.036))
+                axes[0].add_patch(
                     patches.Rectangle(
-                        (x1, y1),
-                        x2 - x1,
-                        y2 - y1,
-                        linewidth=2,
-                        edgecolor="red",
+                        (ex1, ey1),
+                        ex2 - ex1,
+                        ey2 - ey1,
+                        linewidth=1.5,
+                        edgecolor="cyan",
+                        linestyle="--",
                         facecolor="none",
                     )
                 )
-        else:
+
+        # Panel 2: Mask
+        if result.mask is not None:
+            axes[1].imshow(
+                np.array(result.mask.convert("L")), cmap="gray", vmin=0, vmax=255
+            )
+            axes[1].set_title("Inpainting Mask")
+            axes[1].axis("off")
+
+        # Panel 3: Inpainted Result
+        if result.image is not None:
+            axes[2].imshow(result.image)
+            axes[2].set_title("Result")
             axes[2].axis("off")
-            axes[2].set_title("Inpainted (none)")
 
         plt.tight_layout()
-
         if save_path:
-            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
             plt.savefig(save_path, dpi=150, bbox_inches="tight")
-            logger.info(f"Visualization saved to {save_path}")
-            return save_path
-        return None
     finally:
         plt.close(fig)

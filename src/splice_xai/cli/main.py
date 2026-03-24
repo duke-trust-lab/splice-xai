@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Command-line interface for SPLICE-XAI"""
+"""Command-line interface for SPLICE-XAI with Sequential Replacement Support"""
 
 import argparse
 import logging
@@ -166,14 +166,15 @@ def main():
 
     _set_seed(args.seed)
 
-    # Consolidated multi-instance flag
-    use_union_mask = args.remove_all or args.replace_all
+    # Note: replace_all triggers Sequential logic in analyzer,
+    # while remove_all triggers Union logic in analyzer.
+    use_multi = args.remove_all or args.replace_all
 
     # Initialize configuration
     config = InpaintingConfig(
         detector_conf_threshold=args.conf_threshold,
         use_sam=not args.box_only,
-        mask_mode="union" if use_union_mask else "top1",
+        mask_mode="union" if args.remove_all else "top1",
         device=args.device,
     )
 
@@ -202,7 +203,7 @@ def main():
                     prompt=args.prompt,
                     model=args.inpaint_model,
                     negative_prompt=args.negative_prompt,
-                    remove_all=use_union_mask,  # Pass intent to analyzer
+                    remove_all=args.remove_all,
                 )
             if mode == "replace":
                 return analyzer.replace_object(
@@ -212,7 +213,7 @@ def main():
                     model=args.inpaint_model,
                     target_label=args.target_label,
                     negative_prompt=args.negative_prompt,
-                    replace_all=use_union_mask,  # Pass intent to analyzer
+                    replace_all=args.replace_all,  # Triggers Sequential Loop
                 )
             if mode == "background":
                 return analyzer.change_background(
@@ -241,9 +242,7 @@ def main():
     # Execution Loop
     for img_path in input_paths:
         for mode in modes:
-            logger.info(
-                f"Processing {img_path.name} | Mode: {mode} | Mask: {config.mask_mode}"
-            )
+            logger.info(f"Processing {img_path.name} | Mode: {mode}")
             result = _run_single(str(img_path), mode)
             if result is None:
                 continue
@@ -260,7 +259,7 @@ def main():
 
             before, after = _conf_tuple(result)
             logger.info(
-                f"Result: {result.outcome} (Objects: {result.original_count} -> {result.result_count})"
+                f"Result: {result.outcome} ({result.original_count} -> {result.result_count})"
             )
 
     # --- CSV Generation ---
@@ -268,11 +267,7 @@ def main():
         all_csv_rows = []
         for r in results:
             all_csv_rows.extend(r.to_rows())
-
         save_results_to_csv(all_csv_rows, args.csv)
-        logger.info(
-            f"Successfully saved {len(all_csv_rows)} detection rows to {args.csv}"
-        )
 
     successful = sum(1 for r in results if getattr(r, "success", False))
     logger.info(f"\nProcessing complete: {successful}/{len(results)} successful")

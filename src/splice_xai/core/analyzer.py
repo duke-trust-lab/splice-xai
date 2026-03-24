@@ -201,6 +201,7 @@ class SPLICEAnalyzer:
             mask=mask,
             success=is_success,
             outcome=outcome,
+            use_sam=self.config.use_sam,
             mask_mode=effective_mask_mode,
             experiment_type="remove",
             image_path=image_path,
@@ -222,7 +223,6 @@ class SPLICEAnalyzer:
     def _generate_mask(
         self, image: Image.Image, detection: Any, mode: str = "top1"
     ) -> Optional[Image.Image]:
-        """Generates mask and ensures RGB array compatibility for FRCNN/SAM."""
         if detection is None or not detection.has_detection:
             return None
 
@@ -234,21 +234,31 @@ class SPLICEAnalyzer:
         if not boxes:
             return None
 
-        img_np = np.ascontiguousarray(np.array(image.convert("RGB")), dtype=np.uint8)
+        width, height = image.size
 
         if self.config.use_sam and self.segmentor is not None:
+            img_np = np.ascontiguousarray(
+                np.array(image.convert("RGB")), dtype=np.uint8
+            )
             return self.segmentor.generate_mask(
                 img_np, np.array(boxes, dtype=np.float32), mode
             )
         else:
-            width, height = image.size
             mask_np = np.zeros((height, width), dtype=np.uint8)
             for box in boxes:
                 try:
-                    x1, y1, x2, y2 = map(int, [float(c) for c in box[:4]])
-                    mask_np[
-                        max(0, y1) : min(height, y2), max(0, x1) : min(width, x2)
-                    ] = 255
+                    x1, y1, x2, y2 = map(float, [float(c) for c in box[:4]])
+                    w, h = x2 - x1, y2 - y1
+
+                    # 15% Area Expansion Logic:
+                    # To increase area by 15%, sides increase by sqrt(1.15) ~ 1.072
+                    # We shift each edge out by 3.6% of the dimension
+                    ix1 = max(0, int(x1 - (w * 0.036)))
+                    iy1 = max(0, int(y1 - (h * 0.036)))
+                    ix2 = min(width, int(x2 + (w * 0.036)))
+                    iy2 = min(height, int(y2 + (h * 0.036)))
+
+                    mask_np[iy1:iy2, ix1:ix2] = 255
                 except:
                     continue
             return Image.fromarray(mask_np, mode="L")
@@ -275,12 +285,31 @@ class SPLICEAnalyzer:
     def change_background(
         self, image_path: str, background: str, **kwargs
     ) -> CounterfactualResult:
+        """
+        Swaps background while tracking original vs. hallucinated detections.
+        Applies 20% area expansion if box-only flag is set.
+        """
         start_time = time.time()
         image = load_image(image_path)
 
+        # 1. PRE-PROCESS: Original Detection
         orig_det = self.detector.get_top_detection(
             image_path, self.config.detector_conf_threshold
         )
+        if not orig_det.has_detection:
+            return CounterfactualResult(
+                experiment_type="background",
+                image_path=image_path,
+                success=False,
+                outcome="no detections",
+            )
+
+        original_boxes = orig_det.full_results.get("all_boxes", [])
+        original_confs = orig_det.full_results.get("all_confs", [])
+        original_cls_ids = orig_det.full_results.get("all_cls_ids", [])
+
+        # 2. CORE LOGIC: Mask & Expansion
+        # _generate_mask automatically applies the 20% area expansion (4.75% shift) if SAM is off
         mask = self._generate_mask(image, orig_det, mode="union")
         if mask is None:
             return None
@@ -292,22 +321,75 @@ class SPLICEAnalyzer:
         bg_image = self._generate_background(
             bg_prompt, image.size, kwargs.get("model", "stable_diffusion")
         )
+
+        # Composite original seals (with 20% buffer) over the new background
         result_image = self._composite_over_background(image, alpha, bg_image)
 
-        result_detection = self.detector.get_top_detection(
-            np.ascontiguousarray(np.array(result_image.convert("RGB")), dtype=np.uint8),
-            self.config.detector_conf_threshold,
+        # 3. POST-PROCESS: Evaluation
+        result_img_array = np.ascontiguousarray(
+            np.array(result_image.convert("RGB")), dtype=np.uint8
         )
 
+        # Final detections at standard threshold
+        success_detection = self.detector.get_top_detection(
+            result_img_array, self.config.detector_conf_threshold
+        )
+        after_boxes = np.array(success_detection.full_results.get("all_boxes", []))
+        after_confs = np.array(success_detection.full_results.get("all_confs", []))
+        after_cls_ids = np.array(success_detection.full_results.get("all_cls_ids", []))
+
+        # 4. MAPPING: Match "After" to "Original" and find Hallucinations
+        result_confs_mapped = []
+        claimed_after_indices = set()
+
+        # Phase A: Map Original Instances
+        for org_box in original_boxes:
+            org_cx, org_cy = (org_box[0] + org_box[2]) / 2, (
+                org_box[1] + org_box[3]
+            ) / 2
+            best_match_conf, best_match_idx, min_dist = 0.0, -1, float("inf")
+            prox_limit = max(org_box[2] - org_box[0], org_box[3] - org_box[1]) * 1.5
+
+            for i, aft_box in enumerate(after_boxes):
+                if i in claimed_after_indices:
+                    continue
+                aft_cx, aft_cy = (aft_box[0] + aft_box[2]) / 2, (
+                    aft_box[1] + aft_box[3]
+                ) / 2
+                dist = np.sqrt((org_cx - aft_cx) ** 2 + (org_cy - aft_cy) ** 2)
+
+                if dist < prox_limit and dist < min_dist:
+                    min_dist, best_match_conf, best_match_idx = dist, after_confs[i], i
+
+            if best_match_idx != -1:
+                claimed_after_indices.add(best_match_idx)
+            result_confs_mapped.append(float(best_match_conf))
+
+        # Phase B: Identify Hallucinations (Unclaimed detections)
+        additional_detections = []
+        for i in range(len(after_boxes)):
+            if i not in claimed_after_indices:
+                additional_detections.append(
+                    {"conf": float(after_confs[i]), "cls_id": int(after_cls_ids[i])}
+                )
+
+        # 5. CONSTRUCT RESULT
         return CounterfactualResult(
             image=result_image,
             mask=alpha,
             success=True,
             outcome="success",
+            use_sam=self.config.use_sam,  # Required for plotting dashed boxes
             experiment_type="background",
             image_path=image_path,
-            original_count=len(orig_det.full_results.get("all_boxes", [])),
-            result_count=len(result_detection.full_results.get("all_boxes", [])),
+            original_count=len(original_boxes),
+            original_confs=original_confs,
+            original_boxes=original_boxes,  # Required for Panel 1 plotting
+            original_cls_ids=original_cls_ids,
+            result_count=len(after_boxes),
+            result_boxes=after_boxes.tolist(),  # Required for Panel 3 plotting
+            result_confs=result_confs_mapped,
+            additional_detections=additional_detections,  # Required for to_rows CSV
             runtime_seconds=time.time() - start_time,
         )
 

@@ -48,6 +48,9 @@ class CounterfactualResult:
     result_bbox: Optional[List[float]] = None
     result_count: int = 0
 
+    additional_detections: List[Dict[str, Any]] = field(default_factory=list)
+    use_sam: bool = False
+
     # Lists for granular per-instance tracking
     original_boxes: Optional[List[List[float]]] = None
     original_confs: Optional[List[float]] = None
@@ -63,39 +66,59 @@ class CounterfactualResult:
 
     def to_rows(self) -> List[Dict[str, Any]]:
         """
-        Generates a list of dictionaries, one for each original instance.
-        If multiple instances exist, each gets its unique 'instance_confidence'
-        AND its unique mapped 'result_confidence'.
+        Generates a list of dictionaries. Includes rows for:
+        1. Every original instance (mapped to its result confidence).
+        2. Every NEW detection (hallucination) found in the result image.
         """
         rows = []
 
-        # 1. Determine which original confidences to use as the base for rows
+        # 1. Determine base confidences for original instances
         confs_to_process = (
             self.original_confs
             if (self.original_confs and len(self.original_confs) > 0)
             else [self.original_confidence]
         )
 
-        # 2. Handle the "No Detections" case
+        # 2. Handle "No Detections" case
         if not confs_to_process or confs_to_process[0] is None:
             rows.append(
                 self._create_row(instance_id=None, inst_conf=None, res_conf=None)
             )
             return rows
 
-        # 3. Generate one row per animal, passing the mapped result confidence
+        # 3. PHASE 1: Generate rows for original instances
+        # These track what happened to the seals that were already there.
         for i, conf in enumerate(confs_to_process):
-            # Try to get the specific result confidence for this instance index
-            # This relies on the spatial mapping logic we added to analyzer.py
             mapped_res_conf = None
             if self.result_confs and i < len(self.result_confs):
                 mapped_res_conf = self.result_confs[i]
 
-            rows.append(
-                self._create_row(
-                    instance_id=i, inst_conf=conf, res_conf=mapped_res_conf
-                )
+            # Standard row creation
+            row = self._create_row(
+                instance_id=i, inst_conf=conf, res_conf=mapped_res_conf
             )
+            # Add metadata to distinguish this as an original object
+            row["outcome"] = (
+                self.outcome
+                if self.experiment_type != "background"
+                else "original_preserved"
+            )
+            rows.append(row)
+
+        # 4. PHASE 2: Generate rows for "Hallucinations" (Additional Detections)
+        # These are detections in the new background that weren't mapped to originals.
+        additional = getattr(self, "additional_detections", [])
+        if additional:
+            for i, det in enumerate(additional):
+                # We use a unique ID format to avoid clashing with original indices
+                hallucination_row = self._create_row(
+                    instance_id=f"new_{i}",
+                    inst_conf=0.0,  # It didn't exist in the original image
+                    res_conf=det.get("conf", 0.0),
+                )
+                # Override the outcome for these specific rows
+                hallucination_row["outcome"] = "hallucination"
+                rows.append(hallucination_row)
 
         return rows
 
