@@ -21,13 +21,11 @@ def _iter_boxes(
     if not boxes:
         return []
     for b in boxes:
-        # tolerate tensors/arrays/tuples/lists
         if hasattr(b, "detach"):
             b = b.detach().cpu().numpy()
         b = np.asarray(b).astype(float).tolist()
         if len(b) == 4:
             x1, y1, x2, y2 = b
-            # Normalize any reversed corners
             x1, x2 = sorted((x1, x2))
             y1, y2 = sorted((y1, y2))
             yield float(x1), float(y1), float(x2), float(y2)
@@ -35,11 +33,12 @@ def _iter_boxes(
 
 def _clamp_box(box, w: int, h: int):
     x1, y1, x2, y2 = box
-    x1 = max(0.0, min(x1, w - 1))
-    y1 = max(0.0, min(y1, h - 1))
-    x2 = max(0.0, min(x2, w - 1))
-    y2 = max(0.0, min(y2, h - 1))
-    return x1, y1, x2, y2
+    return (
+        max(0, min(x1, w - 1)),
+        max(0, min(y1, h - 1)),
+        max(0, min(x2, w - 1)),
+        max(0, min(y2, h - 1)),
+    )
 
 
 def create_comparison_plot(

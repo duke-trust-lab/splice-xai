@@ -127,7 +127,6 @@ class SPLICEAnalyzer:
             np.array(inpainted.convert("RGB")), dtype=np.uint8
         )
 
-        # --- EXCLUSIVE INSTANCE-SPECIFIC MAPPING LOGIC ---
         # Get ALL raw detections (low threshold) to find "ghost" artifacts
         after_raw = self.detector.get_top_detection(
             result_img_array, conf_threshold=0.01
@@ -401,18 +400,65 @@ class SPLICEAnalyzer:
         return mask
 
     def _generate_background(self, prompt: str, size: tuple, model: str) -> Image.Image:
-        canvas = Image.new("RGB", size, (128, 128, 128))
-        full_mask = Image.new("L", size, 255)
+        """
+        Generates a background that matches the drone image's aspect ratio.
+        Uses 'stretch' mode to avoid letterboxing gray bars.
+        """
+        width, height = size
+
+        # 1. Create a dummy canvas at original size
+        canvas = Image.new("RGB", (width, height), (128, 128, 128))
+        full_mask = Image.new("L", (width, height), 255)
+
+        # 2. Resizing to model's expected input size with stretch to avoid gray bars
         c_res, m_res = resize_for_model(
-            canvas, full_mask, model, self.config.default_model_sizes
+            canvas,
+            full_mask,
+            model,
+            self.config.default_model_sizes,
+            stretch=True,
         )
-        bg = self.inpainter.inpaint(c_res, m_res, model, prompt)
-        return bg.resize(size, Image.LANCZOS)
+
+        logger.info(
+            f"Generating full-frame background for {width}x{height} image (Stretched mode)..."
+        )
+
+        # The AI generates a square (e.g. 1024x1024) with NO gray bars
+        bg_output = self.inpainter.inpaint(c_res, m_res, model, prompt)
+
+        # 3.Stretch the square AI output back to the original RECTANGLE.
+        return bg_output.resize((width, height), Image.LANCZOS)
 
     def _composite_over_background(
         self, image: Image.Image, alpha: Image.Image, background: Image.Image
     ) -> Image.Image:
-        fg = image.copy().convert("RGBA")
-        fg.putalpha(alpha)
+        """
+        Pixel-perfect assembly. Ensures the 'Beach' and 'Whale' share
+        the exact same coordinate system.
+        """
+        # image = The original drone photo (High Res Rectangle)
+        # alpha = The SAM mask (High Res Rectangle)
+        # background = The beach we just resized (Now a High Res Rectangle)
+
+        target_size = image.size
+
+        # 1. Prepare Background (Beach)
         bg = background.convert("RGBA")
-        return Image.alpha_composite(bg, fg).convert("RGB")
+        if bg.size != target_size:
+            bg = bg.resize(target_size, Image.LANCZOS)
+
+        # 2. Prepare Foreground (Whale)
+        fg = image.convert("RGBA")
+
+        # 3. Prepare Alpha Mask (Silhouette)
+        alpha_mask = alpha.convert("L")
+        if alpha_mask.size != target_size:
+            alpha_mask = alpha_mask.resize(target_size, Image.LANCZOS)
+
+        # Apply the cutout logic
+        fg.putalpha(alpha_mask)
+
+        # 4. Final Assembly
+        combined = Image.alpha_composite(bg, fg)
+
+        return combined.convert("RGB")

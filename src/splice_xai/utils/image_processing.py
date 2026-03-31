@@ -72,29 +72,30 @@ def resize_for_model(
     mask: Image.Image,
     model_name: str,
     default_sizes: Dict[str, Optional[Tuple[int, int]]],
+    stretch: bool = True,
 ) -> tuple[Image.Image, Image.Image]:
     """
-    Resize image/mask pair using letterboxing to preserve aspect ratio.
+    Resize image/mask pair. Uses 'stretch' for backgrounds to avoid gray bars.
     """
     size = default_sizes.get(model_name)
     if size is None:
-        return image, _to_L(mask)
+        return image.convert("RGB"), _to_L(mask)
 
-    w, h = size
-    if not isinstance(w, int) or not isinstance(h, int):
-        logger.warning(
-            f"Invalid target size for '{model_name}': {size}. Returning originals."
+    target_size = size  # (w, h)
+
+    if stretch:
+        img_resized = image.convert("RGB").resize(target_size, Image.LANCZOS)
+        mask_resized = _to_L(mask).resize(target_size, Image.NEAREST)
+    else:
+        # Original letterbox logic (keeps aspect ratio with padding)
+        img_resized, _ = letterbox_image(
+            image.convert("RGB"),
+            target_size,
+            fill_color=(128, 128, 128),
+            resample=Image.LANCZOS,
         )
-        return image, _to_L(mask)
-
-    # 1. Letterbox the Image (using gray padding for natural background)
-    img_resized, _ = letterbox_image(
-        image.convert("RGB"), (w, h), fill_color=(128, 128, 128), resample=Image.LANCZOS
-    )
-
-    # 2. Letterbox the Mask (using black padding for the mask)
-    mask_resized, _ = letterbox_image(
-        _to_L(mask), (w, h), fill_color=0, resample=Image.NEAREST
-    )
+        mask_resized, _ = letterbox_image(
+            _to_L(mask), target_size, fill_color=0, resample=Image.NEAREST
+        )
 
     return img_resized, mask_resized
