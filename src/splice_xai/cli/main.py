@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Command-line interface for SPLICE-XAI with Sequential Replacement Support"""
+"""Command-line interface for SPLICE-XAI: Focused Replace & Flexible Remove"""
 
 import argparse
 import logging
@@ -30,11 +30,6 @@ def _validate_paths(args) -> None:
         batch_dir = Path(args.batch)
         if not batch_dir.is_dir():
             raise NotADirectoryError(f"--batch directory not found: {batch_dir}")
-
-    if args.mask:
-        mask = Path(args.mask)
-        if not mask.is_file():
-            raise FileNotFoundError(f"--mask not found: {mask}")
 
     if args.csv:
         csv_path = Path(args.csv)
@@ -98,11 +93,7 @@ def main():
         action="store_true",
         help="Target all detected objects (used for 'remove' mode)",
     )
-    parser.add_argument(
-        "--replace-all",
-        action="store_true",
-        help="Target all detected objects (used for 'replace' mode)",
-    )
+
     parser.add_argument(
         "--mask", help="Path to manual mask image (overrides auto-masking)"
     )
@@ -166,15 +157,11 @@ def main():
 
     _set_seed(args.seed)
 
-    # Note: replace_all triggers Sequential logic in analyzer,
-    # while remove_all triggers Union logic in analyzer.
-    use_multi = args.remove_all or args.replace_all
-
-    # Initialize configuration
+    # Initialize configuration: mask_mode is union only if explicitly removing all
     config = InpaintingConfig(
         detector_conf_threshold=args.conf_threshold,
         use_sam=not args.box_only,
-        mask_mode="union" if args.remove_all else "top1",
+        mask_mode="union" if (args.mode == "remove" and args.remove_all) else "top1",
         device=args.device,
     )
 
@@ -213,7 +200,7 @@ def main():
                     model=args.inpaint_model,
                     target_label=args.target_label,
                     negative_prompt=args.negative_prompt,
-                    replace_all=args.replace_all,  # Triggers Sequential Loop
+                    replace_all=False,  # STRICT: Always replace only the top detection
                 )
             if mode == "background":
                 return analyzer.change_background(
@@ -226,7 +213,6 @@ def main():
             logger.error(f"Error processing {image_path} [{mode}]: {e}")
             return None
 
-    # Collect Input Paths
     input_paths = (
         [args.image]
         if args.image

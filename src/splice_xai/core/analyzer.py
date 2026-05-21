@@ -265,20 +265,26 @@ class SPLICEAnalyzer:
     def replace_object(
         self, image_path: str, replacement_prompt: str, **kwargs
     ) -> CounterfactualResult:
-        is_multi = kwargs.get("remove_all", False) or kwargs.get("replace_all", False)
+        """
+        Adaptive Replacement logic.
+        Uses SAM if available, or Bounding Box if --box-only is flagged.
+        """
+        # 1. Ensure we only target the most confident detection
+        kwargs["mask_mode"] = "top1"
 
-        if is_multi:
-            kwargs["mask_mode"] = "union"
+        # 2. Call the master remove_object function
+        # It will naturally use Box or SAM based on self.config.use_sam
+        result = self.remove_object(
+            image_path, prompt=replacement_prompt, exp_type="replace", **kwargs
+        )
 
-        # CRITICAL: Pass replacement_prompt as the 'prompt' argument
-        result = self.remove_object(image_path, prompt=replacement_prompt, **kwargs)
-
-        result.experiment_type = "replace"
         result.positive_prompt = replacement_prompt
 
-        # Logic for outcome strings...
+        # 3. Tag the outcome for your CSV tracking
         if result.success:
-            result.outcome = "all_replaced" if is_multi else "replaced"
+            method = "box" if not self.config.use_sam else "sam"
+            result.outcome = f"replaced_{method}"
+
         return result
 
     def change_background(
