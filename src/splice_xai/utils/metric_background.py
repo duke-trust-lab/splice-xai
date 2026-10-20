@@ -8,6 +8,13 @@ def calculate_metrics(df):
     """
     Calculates detection performance metrics based on original vs. results.
     """
+    # Create a local copy to avoid modifying the original dataframe safely
+    df = df.copy()
+
+    # If a result confidence is missing (NaN), treat it as 0
+    # so threshold checks (< 0.4) work reliably.
+    df["result_confidence"] = df["result_confidence"].fillna(0.0)
+
     # 1. Identify types of rows
     # Original instances have numeric IDs; hallucinations start with 'new_'
     df["is_hallucination"] = (
@@ -29,14 +36,14 @@ def calculate_metrics(df):
         metrics["avg_conf_change_all"] = orig_df["conf_change"].mean()
         metrics["std_conf_change_all"] = orig_df["conf_change"].std()
 
-        # Catastrophic Failure Rate (Reduction to 0)
-        dropped_to_zero = len(orig_df[orig_df["result_confidence"] == 0])
+        # Catastrophic Failure Rate (Reduction below 0.4)
+        dropped_to_zero = len(orig_df[orig_df["result_confidence"] < 0.4])
         metrics["catastrophic_failure_rate_pct"] = (
             dropped_to_zero / len(orig_df)
         ) * 100
 
         # Retained Cases Only (Confidence > 0)
-        retained_df = orig_df[orig_df["result_confidence"] > 0]
+        retained_df = orig_df[orig_df["result_confidence"] >= 0.4]
         if not retained_df.empty:
             metrics["avg_conf_change_retained"] = retained_df["conf_change"].mean()
             metrics["std_conf_change_retained"] = retained_df["conf_change"].std()
@@ -92,17 +99,23 @@ def run_experiment_analysis(root_path):
         # Skip previously generated metrics files to avoid infinite loops
         if "metrics_summary" in file_path:
             continue
+        if "updateT_metrics_summary" in file_path:
+            continue
 
         print(f"Processing: {file_path}")
         try:
             df = pd.read_csv(file_path)
 
-            # Ensure required columns exist
+            # Fix: Added all required columns accessed in calculate_metrics
             required_cols = [
                 "instance_id",
                 "result_confidence",
                 "instance_confidence",
                 "image_path",
+                "runtime_seconds",
+                "result_count",
+                "original_count",
+                "outcome",
             ]
             if not all(col in df.columns for col in required_cols):
                 print(f"Skipping {file_path}: Missing required columns.")
@@ -113,7 +126,7 @@ def run_experiment_analysis(root_path):
             # Convert dict to DataFrame and save
             metrics_df = pd.DataFrame([results])
             output_name = os.path.join(
-                os.path.dirname(file_path), "metrics_summary.csv"
+                os.path.dirname(file_path), "updateT_metrics_summary.csv"
             )
             metrics_df.to_csv(output_name, index=False)
             print(f"Successfully saved metrics to {output_name}")

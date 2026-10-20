@@ -1,25 +1,45 @@
-import pandas as pd
-import os
 import glob
+import os
+import pandas as pd
 
 
 def calculate_metrics(df):
-    """Calculates the specific metrics requested by the user."""
-    # Ensure numeric types for calculation
+    """Calculates the specific metrics requested by the user with robust error handling."""
+
+    # 1. Ensure numeric types for calculation
     df["instance_confidence"] = pd.to_numeric(
         df["instance_confidence"], errors="coerce"
     )
     df["result_confidence"] = pd.to_numeric(df["result_confidence"], errors="coerce")
     df["runtime_seconds"] = pd.to_numeric(df["runtime_seconds"], errors="coerce")
 
+    # 2. Drop rows with missing crucial data so they don't skew percentages or totals
+    df = df.dropna(
+        subset=["instance_confidence", "result_confidence", "runtime_seconds"]
+    )
+
+    # 3. Guard against completely empty DataFrames (all rows invalid or no data)
+    if df.empty:
+        return {
+            "avg_conf_change_all": 0.0,
+            "std_conf_change_all": 0.0,
+            "percent_reduced_to_zero": 0.0,
+            "avg_change_nonzero_only": 0.0,
+            "std_change_nonzero_only": 0.0,
+            "avg_runtime_per_image": 0.0,
+        }
+
     # Metric 1: Average confidence change and std dev (across all instances)
     df["conf_change"] = df["result_confidence"] - df["instance_confidence"]
     avg_conf_change = df["conf_change"].mean()
     std_conf_change = df["conf_change"].std()
 
-    # Metric 2: Percentage of instances reduced to 0 confidence
-    # Using 0.001 to account for float precision
-    is_zero = df["result_confidence"] <= 0.001
+    # Handle case where std dev is NaN (e.g., only 1 row of data)
+    if pd.isna(std_conf_change):
+        std_conf_change = 0.0
+
+    # Metric 2: Percentage of instances reduced below 0.4 confidence
+    is_zero = df["result_confidence"] < 0.4
     percent_zero = (is_zero.sum() / len(df)) * 100
 
     # Metric 3: For those NOT reduced to 0, average change and std dev
@@ -27,14 +47,16 @@ def calculate_metrics(df):
     if not non_zero_df.empty:
         avg_change_non_zero = non_zero_df["conf_change"].mean()
         std_change_non_zero = non_zero_df["conf_change"].std()
+        if pd.isna(std_change_non_zero):
+            std_change_non_zero = 0.0
     else:
-        avg_change_non_zero = 0
-        std_change_non_zero = 0
+        avg_change_non_zero = 0.0
+        std_change_non_zero = 0.0
 
     # Metric 4: Average runtime per image
-    # Note: Using .first() because runtime is usually logged per image,
-    # and we don't want to double-count it for every instance in that image.
     avg_runtime = df.groupby("image_path")["runtime_seconds"].first().mean()
+    if pd.isna(avg_runtime):
+        avg_runtime = 0.0
 
     return {
         "avg_conf_change_all": avg_conf_change,
@@ -74,7 +96,19 @@ def process_experiments():
 
             try:
                 # Combine all CSVs found in this experiment folder
-                temp_dfs = [pd.read_csv(f) for f in csv_files]
+                temp_dfs = []
+                for f in csv_files:
+                    try:
+                        temp_df = pd.read_csv(f)
+                        if not temp_df.empty:
+                            temp_dfs.append(temp_df)
+                    except Exception as csv_err:
+                        print(f"  -> Warning: Could not read file {f}: {csv_err}")
+
+                if not temp_dfs:
+                    print(f"Skipping {exp}: All CSV files were unreadable or empty.")
+                    continue
+
                 combined_df = pd.concat(temp_dfs, ignore_index=True)
 
                 # Calculate metrics
@@ -85,7 +119,7 @@ def process_experiments():
                 # Save individual experiment metrics CSV
                 res_df = pd.DataFrame([metrics])
                 individual_save_path = os.path.join(
-                    exp_folder_path, "metrics_summary.csv"
+                    exp_folder_path, "updateT_metrics_summary.csv"
                 )
                 res_df.to_csv(individual_save_path, index=False)
 
@@ -103,7 +137,9 @@ def process_experiments():
         ]
         master_df = master_df[cols]
 
-        master_path = os.path.join(root_dir, "all_experiments_master_report.csv")
+        master_path = os.path.join(
+            root_dir, "updateT_all_experiments_master_report.csv"
+        )
         master_df.to_csv(master_path, index=False)
 
         print("\n" + "=" * 30)

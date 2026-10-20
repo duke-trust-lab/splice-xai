@@ -1,7 +1,7 @@
 import pandas as pd
 
 # Load the filtered CSV
-file_path = "/Users/jiayizhou/Desktop/splice-xai/final_replace/replace_success/whale_yolo_sam_vessel_filtered/filtered_results.csv"
+file_path = "/Users/jiayizhou/Desktop/splice-xai/final_replace/replace_success/whale_yolo_box_vessel_filtered/filtered_results.csv"
 
 try:
     df = pd.read_csv(file_path)
@@ -12,7 +12,7 @@ except FileNotFoundError:
 # --- 1. Basic Setup ---
 total_instances = len(df)
 df["conf_drop"] = df["instance_confidence"] - df["result_confidence"]
-near_zero_thresh = 0.001
+near_zero_thresh = 0.4
 
 # --- 2. Calculation Logic ---
 
@@ -26,7 +26,7 @@ nearly_zero = df[df["result_confidence"] <= near_zero_thresh].shape[0]
 
 # Stubborn detection analysis (The new metric)
 # These are cases where the object was NOT fully removed
-stubborn_df = df[df["result_confidence"] > near_zero_thresh]
+stubborn_df = df[df["result_confidence"] >= near_zero_thresh]
 if not stubborn_df.empty:
     avg_drop_stubborn = stubborn_df["conf_drop"].mean()
     avg_remaining_conf = stubborn_df["result_confidence"].mean()
@@ -42,8 +42,6 @@ print("=" * 60)
 
 print(f"## GENERAL STATISTICS")
 print(f"Total Instances Processed : {total_instances}")
-print(f"Overall Success Rate      : {success_rate:.2f}%")
-print(f"  (Success = instances where target object confidence <0.4 after editing)")
 print(f"Average Runtime           : {df['runtime_seconds'].mean():.3f}s")
 print(f"Max Runtime               : {df['runtime_seconds'].max():.3f}s")
 
