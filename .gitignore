@@ -27,6 +27,7 @@ results*/
 *background*/
 *sample*/
 *final*/
+*traditional*/
 
 # Model weights and checkpoints
 *.pt

@@ -140,7 +140,41 @@ def main():
         help="Computation device",
     )
 
+    parser.add_argument(
+        "--perturbation",
+        choices=[
+            "inpainting",
+            "black_mask",
+            "blurring",
+        ],
+        default="inpainting",
+        help=(
+            "Removal method: diffusion inpainting, "
+            "black animal mask, or masked Gaussian blur."
+        ),
+    )
+
+    parser.add_argument(
+        "--blur-radius",
+        type=float,
+        default=15.0,
+        help="Gaussian blur radius in original-image pixels.",
+    )
+
+    parser.add_argument(
+        "--save-masks",
+        action="store_true",
+        help="Save the actual mask used for each experiment.",
+    )
+
     args = parser.parse_args()
+
+    if args.perturbation != "inpainting" and args.mode != "remove":
+        parser.error("black_mask and blurring require --mode remove.")
+
+    if args.perturbation == "blurring":
+        if not np.isfinite(args.blur_radius) or args.blur_radius <= 0:
+            parser.error("--blur-radius must be finite and greater than zero.")
 
     # Determine Model Type Automatically
     m_type = args.model_type
@@ -191,6 +225,8 @@ def main():
                     model=args.inpaint_model,
                     negative_prompt=args.negative_prompt,
                     remove_all=args.remove_all,
+                    perturbation=args.perturbation,
+                    blur_radius=args.blur_radius,
                 )
             if mode == "replace":
                 return analyzer.replace_object(
@@ -214,7 +250,7 @@ def main():
             return None
 
     input_paths = (
-        [args.image]
+        [Path(args.image)]
         if args.image
         else [
             p
@@ -234,14 +270,36 @@ def main():
                 continue
             results.append(result)
 
+            # Traditional outputs identify the perturbation instead of "remove".
+            output_label = (
+                args.perturbation
+                if mode == "remove" and args.perturbation != "inpainting"
+                else mode
+            )
+
+            stem = Path(img_path).stem
+
             if args.save_images and getattr(result, "image", None) is not None:
-                stem = Path(img_path).stem
-                out_name = f"{stem}_{mode}.png"
-                result.image.save(output_dir / out_name)
+                image_path = output_dir / f"{stem}_{output_label}.png"
+
+                result.image.save(image_path)
+                result.output_image_path = str(image_path)
+
+            if args.save_masks and getattr(result, "mask", None) is not None:
+                mask_path = output_dir / f"{stem}_{output_label}_mask.png"
+
+                result.mask.save(mask_path)
 
             if args.visualize and getattr(result, "image", None) is not None:
-                viz_path = output_dir / f"{Path(img_path).stem}_{mode}_viz.png"
-                create_comparison_plot(str(img_path), result, str(viz_path))
+                viz_path = output_dir / f"{stem}_{output_label}_viz.png"
+
+                create_comparison_plot(
+                    str(img_path),
+                    result,
+                    str(viz_path),
+                )
+
+                result.visualization_path = str(viz_path)
 
             before, after = _conf_tuple(result)
             logger.info(
@@ -249,11 +307,37 @@ def main():
             )
 
     # --- CSV Generation ---
+    # --- CSV Generation ---
     if args.csv and results:
         all_csv_rows = []
-        for r in results:
-            all_csv_rows.extend(r.to_rows())
-        save_results_to_csv(all_csv_rows, args.csv)
+
+        for result in results:
+            all_csv_rows.extend(result.to_rows())
+
+        csv_path = Path(args.csv)
+
+        if args.perturbation != "inpainting":
+            suffix = f"_{args.perturbation}"
+
+            if not csv_path.stem.endswith(suffix):
+                csv_path = csv_path.with_name(
+                    csv_path.stem + suffix + (csv_path.suffix or ".csv")
+                )
+
+        csv_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        save_results_to_csv(
+            all_csv_rows,
+            str(csv_path),
+        )
+
+        logger.info(
+            "CSV saved to %s",
+            csv_path,
+        )
 
     successful = sum(1 for r in results if getattr(r, "success", False))
     logger.info(f"\nProcessing complete: {successful}/{len(results)} successful")

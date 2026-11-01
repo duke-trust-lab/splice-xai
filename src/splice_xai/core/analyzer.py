@@ -11,7 +11,11 @@ from .results import CounterfactualResult
 from ..detection.yolo_detector import YOLODetector
 from ..detection.fasterrcnn_detector import FasterRCNNDetector
 from ..detection.sam_segmentation import SAMSegmentor
-from ..inpainting.replicate_backend import ReplicateInpainter
+
+# from ..inpainting.replicate_backend import ReplicateInpainter
+from ..perturbation.traditional import (
+    apply_traditional_perturbation,
+)
 from ..utils.image_processing import dilate_mask, feather_mask, resize_for_model
 from ..utils.file_io import load_image, load_mask
 from ..utils.gpu_manager import GPUResourceManager
@@ -52,7 +56,22 @@ class SPLICEAnalyzer:
                 device=device,
             )
 
-        self.inpainter = ReplicateInpainter(replicate_api_key, self.config)
+        # self.inpainter = ReplicateInpainter(replicate_api_key, self.config)
+        self._replicate_api_key = replicate_api_key
+        self._inpainter = None
+
+    @property
+    def inpainter(self):
+        """Initialize inpainting only when an inpainting task uses it."""
+        if self._inpainter is None:
+            from ..inpainting.replicate_backend import ReplicateInpainter
+
+            self._inpainter = ReplicateInpainter(
+                self._replicate_api_key,
+                self.config,
+            )
+
+        return self._inpainter
 
     def remove_object(
         self,
@@ -61,28 +80,64 @@ class SPLICEAnalyzer:
         prompt: Optional[str] = None,
         model: str = "stable_diffusion",
         mask_mode: Optional[str] = None,
+        perturbation: str = "inpainting",
+        blur_radius: float = 15.0,
         **kwargs,
     ) -> CounterfactualResult:
         """
-        Generate a counterfactual with exclusive instance tracking and
-        class-aware success verification.
+        Run diffusion removal or a traditional removal baseline.
+
+        Shared across all methods:
+        - Original detection
+        - Mask generation
+        - After detection
+        - Original-instance confidence matching
+        - Unmatched original confidence = 0.0
+        - Class-population success criterion
+        - CounterfactualResult and existing CSV export
         """
+        if perturbation not in {
+            "inpainting",
+            "black_mask",
+            "blurring",
+        }:
+            raise ValueError(f"Unsupported perturbation: {perturbation}")
+
+        experiment_type = "remove" if perturbation == "inpainting" else perturbation
+
         start_time = time.time()
 
-        # 1. Original Detection (Before)
+        # 1. Detect original instances.
         orig_detection = self.detector.get_top_detection(
-            image_path, self.config.detector_conf_threshold
+            image_path,
+            self.config.detector_conf_threshold,
         )
 
         image = load_image(image_path)
+
         effective_mask_mode = mask_mode or getattr(self.config, "mask_mode", "top1")
 
-        # 2. Mask Generation
-        mask = self._generate_mask(image, orig_detection, mode=effective_mask_mode)
+        if kwargs.get("remove_all"):
+            effective_mask_mode = "union"
+
+        # 2. Load a manual mask or generate the existing automatic mask.
+        if mask_path:
+            with Image.open(mask_path) as manual_mask:
+                mask = manual_mask.convert("L")
+
+            if mask.size != image.size:
+                raise ValueError("Manual mask and image dimensions must match.")
+
+        else:
+            mask = self._generate_mask(
+                image,
+                orig_detection,
+                mode=effective_mask_mode,
+            )
 
         if mask is None:
             return CounterfactualResult(
-                experiment_type="remove",
+                experiment_type=experiment_type,
                 image_path=image_path,
                 success=False,
                 outcome="no mask",
@@ -90,127 +145,158 @@ class SPLICEAnalyzer:
 
         if not orig_detection.has_detection:
             return CounterfactualResult(
-                experiment_type="remove",
+                experiment_type=experiment_type,
                 image_path=image_path,
                 success=False,
                 outcome="no detections",
             )
 
-        # Sync original instance data for per-instance tracking
+        # Original instance data, as in your existing removal function.
         full_res = orig_detection.full_results
+
         original_boxes = full_res.get("all_boxes", [])
         original_confs = full_res.get("all_confs", [])
         original_cls_ids = full_res.get("all_cls_ids", [])
 
-        # Track which classes we are specifically trying to remove/replace
         target_class_ids = set(original_cls_ids)
 
-        # 3. Inpainting Pipeline
-        img_resized, mask_resized = resize_for_model(
-            image, mask, model, self.config.default_model_sizes
-        )
-
-        with GPUResourceManager():
-            inpainted_raw = self.inpainter.inpaint(
-                img_resized,
-                mask_resized,
+        # 3. Edit the image.
+        # This is the main new branch.
+        if perturbation == "inpainting":
+            img_resized, mask_resized = resize_for_model(
+                image,
+                mask,
                 model,
-                prompt or self.config.default_removal_prompt,
-                negative_prompt=kwargs.get("negative_prompt") or "",
+                self.config.default_model_sizes,
             )
 
-        # 4. Post-Processing: Restore original dimensions
-        inpainted = inpainted_raw.resize(image.size, Image.LANCZOS)
+            with GPUResourceManager():
+                inpainted_raw = self.inpainter.inpaint(
+                    img_resized,
+                    mask_resized,
+                    model,
+                    prompt or self.config.default_removal_prompt,
+                    negative_prompt=(kwargs.get("negative_prompt") or ""),
+                )
 
-        # Ensure array parity for the "After" detection
+            result_image = inpainted_raw.resize(
+                image.size,
+                Image.LANCZOS,
+            )
+
+        else:
+            result_image = apply_traditional_perturbation(
+                image=image,
+                mask=mask,
+                method=perturbation,
+                blur_radius=blur_radius,
+            )
+
+        # 4. Detect the edited image at the original low tracking threshold.
         result_img_array = np.ascontiguousarray(
-            np.array(inpainted.convert("RGB")), dtype=np.uint8
+            np.array(result_image.convert("RGB")),
+            dtype=np.uint8,
         )
 
-        # Get ALL raw detections (low threshold) to find "ghost" artifacts
         after_raw = self.detector.get_top_detection(
-            result_img_array, conf_threshold=0.01
+            result_img_array,
+            conf_threshold=0.01,
         )
+
         after_boxes = np.array(after_raw.full_results.get("all_boxes", []))
         after_confs = np.array(after_raw.full_results.get("all_confs", []))
 
+        # 5. Preserve your existing instance-matching algorithm.
         result_confs_mapped = []
-        claimed_after_indices = set()  # Lock detections once assigned
+        claimed_after_indices = set()
 
         for org_box in original_boxes:
             org_cx = (org_box[0] + org_box[2]) / 2
             org_cy = (org_box[1] + org_box[3]) / 2
 
+            # Same unmatched reporting value as your original removal code.
             best_match_conf = 0.0
             best_match_idx = -1
             min_dist = float("inf")
 
-            # Proximity threshold based on the original object's dimensions
-            prox_limit = max(org_box[2] - org_box[0], org_box[3] - org_box[1]) * 1.5
+            prox_limit = (
+                max(
+                    org_box[2] - org_box[0],
+                    org_box[3] - org_box[1],
+                )
+                * 1.5
+            )
 
-            if len(after_boxes) > 0:
-                for i, aft_box in enumerate(after_boxes):
-                    if i in claimed_after_indices:
-                        continue
+            for i, aft_box in enumerate(after_boxes):
+                if i in claimed_after_indices:
+                    continue
 
-                    aft_cx = (aft_box[0] + aft_box[2]) / 2
-                    aft_cy = (aft_box[1] + aft_box[3]) / 2
+                aft_cx = (aft_box[0] + aft_box[2]) / 2
+                aft_cy = (aft_box[1] + aft_box[3]) / 2
 
-                    dist = np.sqrt((org_cx - aft_cx) ** 2 + (org_cy - aft_cy) ** 2)
+                dist = np.sqrt((org_cx - aft_cx) ** 2 + (org_cy - aft_cy) ** 2)
 
-                    # Update best match if it's the closest one within proximity
-                    if dist < prox_limit and dist < min_dist:
-                        min_dist = dist
-                        best_match_conf = after_confs[i]
-                        best_match_idx = i
+                if dist < prox_limit and dist < min_dist:
+                    min_dist = dist
+                    best_match_conf = after_confs[i]
+                    best_match_idx = i
 
             if best_match_idx != -1:
                 claimed_after_indices.add(best_match_idx)
 
             result_confs_mapped.append(float(best_match_conf))
 
-        # 5. Class-Aware Success Check
-        # Run detection at standard threshold to check for lingering target objects
+        # 6. Preserve your existing normal-threshold success check.
         success_detection = self.detector.get_top_detection(
-            result_img_array, conf_threshold=self.config.detector_conf_threshold
+            result_img_array,
+            conf_threshold=(self.config.detector_conf_threshold),
         )
 
         after_full_res = success_detection.full_results
+
         after_cls_ids = after_full_res.get("all_cls_ids", [])
 
-        # Count only if the remaining detection matches one of the original classes
-        # This ignores newly correctly identified replacement objects (e.g., 'rock')
-        remaining_targets = [cid for cid in after_cls_ids if cid in target_class_ids]
+        remaining_targets = [
+            class_id for class_id in after_cls_ids if class_id in target_class_ids
+        ]
 
         result_count = len(remaining_targets)
         is_success = result_count == 0
 
-        # Define scientific outcome
         if is_success:
             outcome = "success"
-        else:
-            outcome = (
-                "partial_success"
-                if result_count < len(original_boxes)
-                else "unsuccessful"
-            )
 
+        elif result_count < len(original_boxes):
+            outcome = "partial_success"
+
+        else:
+            outcome = "unsuccessful"
+
+        # 7. Return the same result type used by your existing CSV exporter.
         return CounterfactualResult(
-            image=inpainted,
+            image=result_image,
             mask=mask,
             success=is_success,
             outcome=outcome,
             use_sam=self.config.use_sam,
             mask_mode=effective_mask_mode,
-            experiment_type="remove",
+            experiment_type=experiment_type,
             image_path=image_path,
-            inpainting_model=model,
+            mask_path=mask_path,
+            inpainting_model=(model if perturbation == "inpainting" else "none"),
+            positive_prompt=(
+                prompt or self.config.default_removal_prompt
+                if perturbation == "inpainting"
+                else None
+            ),
+            negative_prompt=(
+                kwargs.get("negative_prompt") if perturbation == "inpainting" else None
+            ),
             original_count=len(original_boxes),
             original_confidence=orig_detection.confidence,
             original_confs=original_confs,
             original_cls_ids=original_cls_ids,
             original_boxes=original_boxes,
-            # Tracks only the target class population change
             result_count=result_count,
             result_confs=result_confs_mapped,
             result_confidence=(
